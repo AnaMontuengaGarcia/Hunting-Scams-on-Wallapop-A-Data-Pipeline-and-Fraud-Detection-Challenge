@@ -1,0 +1,22 @@
+# Conexión a Elasticsearch
+es_host: localhost
+es_port: 9200
+# Si tu ES tiene usuario/pass, descomenta estas líneas:
+# es_username: elastic
+# es_password: changeme
+
+# Índice donde ElastAlert guarda su estado interno (no lo cambies)
+writeback_index: elastalert_status
+
+# Frecuencia de ejecución (cada 1 minuto para pruebas es ideal)
+run_every:
+  minutes: 1
+
+# Tiempo de "buffer" para asegurar que los datos han llegado (overlap)
+buffer_time:
+  minutes: 15
+
+# IP/Host para enlaces en alertas (opcional)
+es_conn_timeout: 20
+alert_time_limit:
+  days: 2

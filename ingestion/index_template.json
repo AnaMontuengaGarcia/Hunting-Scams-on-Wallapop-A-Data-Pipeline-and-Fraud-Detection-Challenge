@@ -1,0 +1,41 @@
+PUT _index_template/lab10310-wallapop-template
+{
+  "index_patterns": ["lab10310.wallapop*"],
+  "template": {
+    "settings": {
+      "index.lifecycle.name": "lab10310-wallapop-policy",
+      "index.lifecycle.rollover_alias": "lab10310.wallapop"
+    },
+    "mappings": {
+      "properties": {
+        "id": { "type": "keyword" },
+        "title": { "type": "text" },
+        "description": { "type": "text" },
+        "price": { "type": "float" },
+        "currency": { "type": "keyword" },
+        "category_id": { "type": "keyword" },
+        "user_id": { "type": "keyword" },
+        "location": {
+          "properties": {
+            "geo": { "type": "geo_point" },
+            "city": { "type": "keyword" },
+            "postal_code": { "type": "keyword" }
+          }
+        },
+        "timestamps": {
+          "properties": {
+            "crawl_timestamp": { "type": "date" },
+            "created_at": { "type": "date" }
+          }
+        },
+        "enrichment": {
+          "properties": {
+            "risk_score": { "type": "integer" },
+            "suspicious_keywords": { "type": "keyword" },
+            "risk_factors": { "type": "text" }
+          }
+        }
+      }
+    }
+  }
+}

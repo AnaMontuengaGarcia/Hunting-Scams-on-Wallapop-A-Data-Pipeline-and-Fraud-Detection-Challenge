@@ -1,0 +1,22 @@
+name: "Wallapop Laptops: Ítem de Alto Riesgo"
+type: frequency
+num_events: 1
+timeframe:
+  minutes: 10
+
+index: "lab10310.wallapop"
+
+# Filtro: Risk Score calculado por tu script >= 50
+filter:
+- range:
+    enrichment.risk_score:
+      gte: 50
+
+alert:
+- "debug"
+
+alert_text: "ALERTA DE FRAUDE: Ítem con Risk Score {0}/100.\nMotivos: {1}\nTítulo: {2}"
+alert_text_args:
+- "enrichment.risk_score"
+- "enrichment.risk_factors"
+- "title"
