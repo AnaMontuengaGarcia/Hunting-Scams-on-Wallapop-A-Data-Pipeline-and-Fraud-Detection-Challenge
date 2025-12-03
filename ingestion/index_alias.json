@@ -1,0 +1,8 @@
+PUT lab10310.wallapop-000001
+{
+  "aliases": {
+    "lab10310.wallapop": {
+      "is_write_index": true
+    }
+  }
+}
