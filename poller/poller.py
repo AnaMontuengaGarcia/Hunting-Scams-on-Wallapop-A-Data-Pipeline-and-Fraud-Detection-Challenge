@@ -1,90 +1,143 @@
-import requests
 import json
 import time
 from datetime import datetime
 from typing import List, Dict, Any
 
+# pip install curl-cffi
+from curl_cffi import requests
+
 # --- CONFIGURACIÓN ---
-# Categoría Laptops (Según tu elección e ID del PDF)
-CATEGORY_ID = "10310" 
+CATEGORY_ID = "24200"  # Portátiles
+SEARCH_KEYWORDS = "portátil"
+MAX_ITEMS_TO_FETCH = 100 
 
-# Búsqueda general para capturar variedad. Puedes rotar keywords si quieres.
-SEARCH_KEYWORDS = "portátil laptop macbook gaming"
-
-# Coordenadas (Madrid centro como ejemplo, requerido por la API)
-LATITUDE = "40.4129297"
-LONGITUDE = "-3.695283"
-
-# Headers OBLIGATORIOS según el PDF 
-HEADERS = {
-    "Host": "api.wallapop.com",
-    "X-DeviceOS": "0"
-}
-
-# Palabras clave sospechosas para enriquecimiento (Sección 8 del PDF)
 SUSPICIOUS_KEYWORDS = [
     "urgente", "rotos", "para piezas", "bloqueado", "bios", 
     "sin cargador", "icloud", "reparar", "tarada", "solo hoy", 
     "sin factura", "indivisible", "no funciona"
 ]
 
-def fetch_today_items() -> List[Dict[str, Any]]:
+def make_request(url: str, params: dict) -> requests.Response:
     """
-    Consulta la API de Wallapop y devuelve la lista de ítems encontrados hoy.
+    Estrategia Corregida: ALINEACIÓN TOTAL DE VERSIONES
+    User-Agent y Huella TLS deben coincidir exactamente (Chrome 110).
     """
+    
+    headers = {
+        "Host": "api.wallapop.com",
+        "Accept": "application/json, text/plain, */*",
+        # CORRECCIÓN CRÍTICA: User-Agent ajustado a Chrome 110 para coincidir con impersonate="chrome110"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36",
+        "Accept-Language": "es-ES,es;q=0.9",
+        "Origin": "https://es.wallapop.com",
+        "Referer": "https://es.wallapop.com/",
+        "X-DeviceOS": "0", 
+        "X-Requested-With": "XMLHttpRequest"
+    }
+
+    print("    [DEBUG] Enviando petición (Perfil: Desktop Chrome 110 Alineado)...")
+    
+    # Usamos chrome110 tanto en la huella TLS como en el User-Agent
+    return requests.get(
+        url, 
+        params=params, 
+        headers=headers, 
+        impersonate="chrome110", 
+        timeout=20
+    )
+
+
+def fetch_items_with_pagination() -> List[Dict[str, Any]]:
     url = "https://api.wallapop.com/api/v3/search"
     
-    # Parámetros según documento [cite: 469]
     params = {
         "category_id": CATEGORY_ID,
         "keywords": SEARCH_KEYWORDS,
-        "time_filter": "today",  # CRÍTICO: Solo ítems de hoy
-        "latitude": LATITUDE,
-        "longitude": LONGITUDE,
+        "source": "search_box",
         "order_by": "newest",
-        "source": "search_box"
-        # Opcional: "min_sale_price": "50" para filtrar basura muy barata
     }
 
-    print(f"[*] Consultando Wallapop API para categoría {CATEGORY_ID}...")
+    all_items = []
+    next_page_token = None
+    page_count = 1
     
-    try:
-        # Timeout de 10s como sugiere el ejemplo [cite: 614]
-        response = requests.get(url, params=params, headers=HEADERS, timeout=10)
-        response.raise_for_status() # Lanza error si no es 200 OK
-        
-        data = response.json()
-        
-        # Extracción segura de ítems navegando la estructura JSON [cite: 619]
-        # La estructura suele ser: data -> search_objects (o items directos dependiendo de la versión)
-        # El PDF sugiere data -> section -> payload -> items, pero la API v3 a veces varía.
-        # Intentamos extraer de la lista principal de resultados:
-        items = data.get("search_objects", [])
-        
-        if not items:
-            # Intento alternativo basado en estructura antigua o variaciones
-            items = data.get("data", {}).get("section", {}).get("payload", {}).get("items", [])
+    print(f"[*] Iniciando búsqueda paginada (Objetivo: {MAX_ITEMS_TO_FETCH} ítems)...")
 
-        print(f"[*] Se han recuperado {len(items)} ítems.")
-        return items
+    while len(all_items) < MAX_ITEMS_TO_FETCH:
+        if next_page_token:
+            params["next_page"] = next_page_token
 
-    except requests.exceptions.RequestException as e:
-        print(f"[!] Error de conexión: {e}")
-        return []
+        try:
+            print(f"    -> Solicitando página {page_count}...")
+            # Un pequeño delay aleatorio ayuda a parecer más humano
+            time.sleep(3)
+
+            response = make_request(url, params)
+
+            if response.status_code == 403:
+                print(f"[!] Error 403: Bloqueado por WAF. Tu IP sigue marcada. Intenta cambiar de red (WiFi vs Datos) o espera 10 min.")
+                break
+            
+            if response.status_code != 200:
+                print(f"[!] Error API fatal ({response.status_code}): {response.text[:200]}")
+                break
+
+            try:
+                data = response.json()
+            except:
+                print("[!] Error decodificando JSON. Respuesta no válida.")
+                break
+            
+            if "error" in data:
+                print(f"    [!] API devolvió error lógico: {data['error']}")
+            
+            current_items = []
+            if "data" in data and "section" in data["data"]:
+                 current_items = data["data"]["section"]["payload"].get("items", [])
+            elif "search_objects" in data:
+                current_items = data.get("search_objects", [])
+            elif "items" in data:
+                current_items = data.get("items", [])
+
+            if not current_items:
+                print("    [ALERTA] Página vacía (Shadowban activo).")
+                print("    --- DIAGNÓSTICO ---")
+                print("    Wallapop ha detectado el script. Prueba lo siguiente:")
+                print("    1. Cambia la IP (Modo avión ON/OFF).")
+                print("    2. Si usas tethering (compartir datos), intenta ejecutarlo conectado a otra red.")
+                break
+            
+            all_items.extend(current_items)
+            print(f"    [+] Encontrados {len(current_items)} ítems en esta página. Total acumulado: {len(all_items)}")
+
+            next_page_token = data.get("meta", {}).get("next_page")
+            
+            if not next_page_token:
+                print("    [-] No hay más páginas disponibles.")
+                break
+            
+            page_count += 1
+
+        except Exception as e:
+            print(f"[!] Excepción crítica durante la petición: {e}")
+            break
+
+    return all_items[:MAX_ITEMS_TO_FETCH]
 
 def calculate_risk(item: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Aplica la lógica de sospecha (Sección 8) y devuelve campos de enriquecimiento.
-    """
     score = 0
     factors = []
     
-    # Extraer datos básicos
-    price = item.get("price", {}).get("amount", 0)
+    price_obj = item.get("price", {})
+    price = 0
+    if isinstance(price_obj, dict):
+        price = float(price_obj.get("amount", 0))
+    elif isinstance(price_obj, (int, float)):
+        price = float(price_obj)
+
     title = item.get("title", "").lower()
     description = item.get("description", "").lower()
     
-    # --- REGLA 1: Palabras clave sospechosas [cite: 1324] ---
     found_keywords = []
     for kw in SUSPICIOUS_KEYWORDS:
         if kw in title or kw in description:
@@ -94,21 +147,16 @@ def calculate_risk(item: Dict[str, Any]) -> Dict[str, Any]:
         score += 20 * len(found_keywords)
         factors.append(f"Keywords: {', '.join(found_keywords)}")
 
-    # --- REGLA 2: Anomalía de precio (Simplificada) [cite: 1313] ---
-    # Para Laptops, un precio funcional por debajo de 50€ suele ser sospechoso (o chatarra)
     if 0 < price < 50:
         score += 30
         factors.append("Price Very Low (<50€)")
 
-    # --- REGLA 3: Descripción muy corta [cite: 1377] ---
     if len(description) < 20:
         score += 10
         factors.append("Short Description")
 
-    # Normalizar score a máximo 100
     score = min(score, 100)
 
-    # Devolvemos el objeto de enriquecimiento
     return {
         "risk_score": score,
         "suspicious_keywords": found_keywords,
@@ -117,38 +165,28 @@ def calculate_risk(item: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 def save_items_to_daily_file(items: List[Dict[str, Any]]):
-    """
-    Guarda los ítems en un fichero JSON Lines con fecha de hoy.
-    """
     if not items:
         print("[!] No hay ítems para guardar.")
         return
 
-    # Nombre de fichero: wallapop_laptops_YYYYMMDD.json [cite: 560]
     today_str = datetime.now().strftime("%Y%m%d")
     filename = f"wallapop_laptops_{today_str}.json"
     
     count = 0
     with open(filename, "w", encoding="utf-8") as f:
         for item in items:
-            # 1. Enriquecer el ítem antes de guardar
             enrichment_data = calculate_risk(item)
             item["enrichment"] = enrichment_data
-            
-            # 2. Añadir timestamps útiles para Elastic [cite: 408]
             item["timestamps"] = {
                 "crawl_timestamp": datetime.now().isoformat()
             }
-            
-            # 3. Escribir línea JSON 
             f.write(json.dumps(item, ensure_ascii=False) + "\n")
             count += 1
             
-    print(f"[*] Guardados {count} ítems enriquecidos en '{filename}'")
+    print(f"[*] ÉXITO: Guardados {count} ítems en '{filename}'")
 
 if __name__ == "__main__":
-    # Ejecución principal
-    print("--- Iniciando Poller Wallapop (Laptops) ---")
-    items = fetch_today_items()
+    print("--- Iniciando Poller Wallapop (Laptops) - ESTRATEGIA CHROME 110 ALINEADA ---")
+    items = fetch_items_with_pagination()
     save_items_to_daily_file(items)
     print("--- Proceso finalizado ---")
