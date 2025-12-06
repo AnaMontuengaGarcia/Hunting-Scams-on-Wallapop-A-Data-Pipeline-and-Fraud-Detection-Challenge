@@ -3,7 +3,7 @@ PUT _index_template/lab10310-wallapop-template
   "index_patterns": ["lab10310.wallapop*"],
   "template": {
     "settings": {
-      "index.lifecycle.name": "lab10310-wallapop-policy",
+      "index.lifecycle.name": "lab10310-wallapop-rotation",
       "index.lifecycle.rollover_alias": "lab10310.wallapop"
     },
     "mappings": {

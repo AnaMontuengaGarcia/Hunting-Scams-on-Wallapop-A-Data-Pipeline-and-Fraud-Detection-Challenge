@@ -1,5 +1,6 @@
 import json
 import time
+import random
 from datetime import datetime
 from typing import List, Dict, Any
 
@@ -7,9 +8,10 @@ from typing import List, Dict, Any
 from curl_cffi import requests
 
 # --- CONFIGURACIÓN ---
-CATEGORY_ID = "24200"  # Portátiles
-SEARCH_KEYWORDS = "portátil"
-MAX_ITEMS_TO_FETCH = 100 
+# Usamos la categoría madre para que la API no nos oculte nada
+CATEGORY_ID = "24200" 
+TARGET_SUB_ID = 10310  # El ID real de portátiles para filtrar nosotros
+MAX_ITEMS_TO_FETCH = 10000 
 
 SUSPICIOUS_KEYWORDS = [
     "urgente", "rotos", "para piezas", "bloqueado", "bios", 
@@ -46,15 +48,26 @@ def make_request(url: str, params: dict) -> requests.Response:
         timeout=20
     )
 
+def is_real_laptop(item: Dict[str, Any]) -> bool:
+    """
+    Devuelve True solo si el ítem tiene el ID 10310 en su taxonomía.
+    """
+    taxonomy = item.get("taxonomy", [])
+    for category in taxonomy:
+        if category.get("id") == TARGET_SUB_ID:
+            return True
+    return False
 
 def fetch_items_with_pagination() -> List[Dict[str, Any]]:
     url = "https://api.wallapop.com/api/v3/search"
     
     params = {
         "category_id": CATEGORY_ID,
-        "keywords": SEARCH_KEYWORDS,
+        "time_filter": "today",
         "source": "search_box",
         "order_by": "newest",
+        "latitude": "40.4168",   # Madrid (o tu ciudad) [cite: 5, 11]
+        "longitude": "-3.7038",  # Madrid
     }
 
     all_items = []
@@ -69,8 +82,12 @@ def fetch_items_with_pagination() -> List[Dict[str, Any]]:
 
         try:
             print(f"    -> Solicitando página {page_count}...")
-            # Un pequeño delay aleatorio ayuda a parecer más humano
-            time.sleep(3)
+            # ESTRATEGIA ANTI-BOT:
+            # Esperar entre 5 y 12 segundos aleatorios.
+            # Esto reduce la velocidad (evita el timeout) y parece humano.
+            sleep_time = random.uniform(5, 12)
+            print(f"    [DORMIR] Pausa táctica de {sleep_time:.2f} segundos...")
+            time.sleep(sleep_time)
 
             response = make_request(url, params)
 
@@ -84,6 +101,11 @@ def fetch_items_with_pagination() -> List[Dict[str, Any]]:
 
             try:
                 data = response.json()
+                # --- DEBUG TEMPORAL ---
+                # Si la lista de items está vacía, imprime qué devolvió la API realmente
+                if "items" not in str(data): 
+                    print(f"[DEBUG API] Respuesta cruda: {json.dumps(data, indent=2)}")
+                # ----------------------
             except:
                 print("[!] Error decodificando JSON. Respuesta no válida.")
                 break
@@ -106,9 +128,21 @@ def fetch_items_with_pagination() -> List[Dict[str, Any]]:
                 print("    1. Cambia la IP (Modo avión ON/OFF).")
                 print("    2. Si usas tethering (compartir datos), intenta ejecutarlo conectado a otra red.")
                 break
-            
-            all_items.extend(current_items)
-            print(f"    [+] Encontrados {len(current_items)} ítems en esta página. Total acumulado: {len(all_items)}")
+
+
+            items_of_interest = []
+            for item in current_items:
+                # FILTRO: Solo guardamos si es realmente un portátil (ID 10310 en taxonomía)
+                if is_real_laptop(item):
+                    items_of_interest.append(item)
+                else:
+                    # Opcional: Imprimir qué estamos descartando para depurar
+                    # print(f"Descartado: {item.get('title')} (No es portátil)")
+                    pass
+
+            # Añadimos solo los buenos a la lista total
+            all_items.extend(items_of_interest)
+            print(f"    [+] Guardados {len(items_of_interest)} portátiles reales de {len(current_items)} descargados.")
 
             next_page_token = data.get("meta", {}).get("next_page")
             
@@ -119,7 +153,15 @@ def fetch_items_with_pagination() -> List[Dict[str, Any]]:
             page_count += 1
 
         except Exception as e:
-            print(f"[!] Excepción crítica durante la petición: {e}")
+            error_msg = str(e).lower()
+            # Si es un error de timeout o conexión, NO nos rendimos
+            if "time out" in error_msg or "timed out" in error_msg or "connection" in error_msg:
+                print(f"[!] Timeout detectado en pág {page_count}. Esperando 60s para reintentar...")
+                time.sleep(60) 
+                continue  # <--- Vuelve arriba e intenta la MISMA página otra vez
+            
+            # Si es otro error raro, entonces sí paramos
+            print(f"[!] Excepción crítica no recuperable: {e}")
             break
 
     return all_items[:MAX_ITEMS_TO_FETCH]
