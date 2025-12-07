@@ -4,36 +4,85 @@ PUT _index_template/lab10310-wallapop-template
   "template": {
     "settings": {
       "index.lifecycle.name": "lab10310-wallapop-rotation",
-      "index.lifecycle.rollover_alias": "lab10310.wallapop"
+      "index.lifecycle.rollover_alias": "lab10310.wallapop",
+      "number_of_shards": 1,
+      "number_of_replicas": 0
     },
     "mappings": {
+      "dynamic_templates": [
+        {
+          "strings_as_keywords": {
+            "match_mapping_type": "string",
+            "mapping": {
+              "type": "keyword",
+              "ignore_above": 256
+            }
+          }
+        }
+      ],
       "properties": {
         "id": { "type": "keyword" },
-        "title": { "type": "text" },
+        "title": { 
+          "type": "text",
+          "fields": {
+            "keyword": { "type": "keyword", "ignore_above": 256 }
+          }
+        },
         "description": { "type": "text" },
-        "price": { "type": "float" },
-        "currency": { "type": "keyword" },
+        "price": { 
+          "properties": {
+            "amount": { "type": "float" },
+            "currency": { "type": "keyword" }
+          }
+        },
         "category_id": { "type": "keyword" },
         "user_id": { "type": "keyword" },
+        "web_slug": { "type": "keyword" },
         "location": {
           "properties": {
-            "geo": { "type": "geo_point" },
+            "geo": { "type": "geo_point" }, 
+            "latitude": { "type": "float" },
+            "longitude": { "type": "float" },
             "city": { "type": "keyword" },
-            "postal_code": { "type": "keyword" }
+            "postal_code": { "type": "keyword" },
+            "country_code": { "type": "keyword" }
           }
         },
         "timestamps": {
           "properties": {
             "crawl_timestamp": { "type": "date" },
-            "created_at": { "type": "date" }
+            "created_at": { "type": "date" }, 
+            "modified_at": { "type": "date" }
           }
         },
         "enrichment": {
           "properties": {
             "risk_score": { "type": "integer" },
-            "suspicious_keywords": { "type": "keyword" },
-            "risk_factors": { "type": "text" }
+            "risk_factors": { "type": "keyword" }, 
+            "market_analysis": {
+              "properties": {
+                "detected_category": { "type": "keyword" },
+                "composite_z_score": { "type": "float" }, 
+                "estimated_market_value": { "type": "float" },
+                "components_used": { "type": "keyword" },
+                "specs_detected": {
+                  "properties": {
+                    "cpu": { "type": "keyword" },
+                    "ram": { "type": "keyword" },
+                    "gpu": { "type": "keyword" }
+                  }
+                }
+              }
+            }
           }
+        },
+        "taxonomy": {
+          "type": "object",
+          "enabled": false 
+        },
+        "images": {
+          "type": "object",
+          "enabled": false
         }
       }
     }

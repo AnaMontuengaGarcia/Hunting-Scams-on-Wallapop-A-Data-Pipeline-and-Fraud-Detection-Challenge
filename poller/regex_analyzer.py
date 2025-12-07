@@ -4,10 +4,18 @@ import re
 import glob
 import os
 from collections import defaultdict
-from typing import List, Dict, Set, Any
+from typing import List, Dict, Set, Any, Tuple
 
 # --- CONFIGURACIÓN ---
-OUTPUT_STATS_FILE = "market_stats_regex.json"
+OUTPUT_STATS_FILE = "market_stats.json"
+
+# Límites lógicos de RAM para evitar falsos positivos (Sincronizado con smart_poller)
+RAM_LIMITS = {
+    "CHROMEBOOK": 16,
+    "SURFACE": 32,
+    "PREMIUM_ULTRABOOK": 64,
+    "GENERICO": 64
+}
 
 # --- EXPRESIONES REGULARES COMPILADAS ---
 
@@ -59,7 +67,6 @@ LAPTOP_INDICATORS = [
 ]
 
 # Definición de categorías. 
-# IMPORTANTE: SURFACE ahora tiene su propia entrada y se ha eliminado de PREMIUM_ULTRABOOK
 SUB_CATEGORIES_RULES = {
     "APPLE": ["macbook", "mac", "apple", "macos"],
     "SURFACE": ["surface", "microsoft surface"], 
@@ -82,6 +89,56 @@ def is_match(text_lower, keywords):
             return True
     return False
 
+# --- NUEVAS FUNCIONES DE SANITIZACIÓN (Sincronizadas con smart_poller) ---
+
+def smart_truncate_spam(text: str) -> str:
+    """Corta el texto si detecta un bloque de etiquetas spam."""
+    lines = text.split('\n')
+    clean_lines = []
+    spam_indicators = ["rtx", "gtx", "amd", "intel", "ryzen", "i7", "i5", "ps5", "xbox", "iphone", "samsung", "asus", "msi"]
+    
+    for line in lines:
+        hits = 0
+        line_lower = line.lower()
+        for ind in spam_indicators:
+            if ind in line_lower: hits += 1
+        
+        if hits > 3: break # Bloque de spam detectado
+        clean_lines.append(line)
+        
+    return "\n".join(clean_lines)
+
+def sanitize_hardware_ambiguities(text: str) -> str:
+    """Corrige 'SSD M2' vs 'Apple M2'."""
+    text = re.sub(r"(?i)\b(ssd|disco|disk|drive|almacenamiento)\s+m\.?2\b", r"\1_NVME", text)
+    text = re.sub(r"(?i)\bm\.?2\s+(ssd|nvme|sata)\b", r"NVME_\1", text)
+    return text
+
+def apply_category_constraints(specs: Dict, category: str, full_text_original: str) -> Dict:
+    """Aplica reglas de negocio (RAM max, CPU coherente)."""
+    limit_ram = RAM_LIMITS.get(category, 128)
+    
+    current_ram_gb = 0
+    if specs.get("ram"):
+        try:
+            current_ram_gb = int(re.sub(r"[^0-9]", "", specs["ram"]))
+        except: pass
+        
+    if current_ram_gb > limit_ram:
+        corrected_ram = extract_ram(full_text_original.lower(), max_gb=limit_ram)
+        if corrected_ram:
+            specs["ram"] = corrected_ram
+        else:
+            specs["ram"] = None
+
+    if category == "CHROMEBOOK" and specs.get("cpu") and "I7" in specs["cpu"]:
+        if "celeron" in full_text_original.lower():
+            specs["cpu"] = "INTEL CELERON"
+        elif "pentium" in full_text_original.lower():
+             specs["cpu"] = "INTEL PENTIUM"
+             
+    return specs
+
 def determine_market_segment(title, description, price, specs=None):
     title_lower = title.lower()
     
@@ -97,7 +154,6 @@ def determine_market_segment(title, description, price, specs=None):
     if is_accessory_keyword:
         if price < 100: return "ACCESSORY"
         
-        # NUEVA REGLA: Si es caro (>200) y tiene specs (CPU o RAM), es un portátil aunque diga "funda"
         has_specs = specs and (specs.get("cpu") or specs.get("ram"))
         if price > 200 and has_specs:
             return "PRIME"
@@ -121,7 +177,6 @@ def clean_cpu_string(brand, models, is_apple):
     if not models: return None
     best = models[0].upper() 
     
-    # Normalización de marcas
     if is_apple or "M1" in best or "M2" in best or "M3" in best: 
         brand = "APPLE"
     elif "RYZEN" in best: 
@@ -131,9 +186,8 @@ def clean_cpu_string(brand, models, is_apple):
     elif any(x in best for x in ["CELERON", "PENTIUM", "ATOM", "XEON"]):
         brand = "INTEL"
     elif any(x in best for x in ["SNAPDRAGON", "SQ1", "SQ2", "SQ3"]):
-        brand = "QUALCOMM" # O Microsoft para SQ, pero Qualcomm es el fabricante base
+        brand = "QUALCOMM"
     
-    # Formateo
     if "RYZEN" in best and best.replace("RYZEN", "") and best.replace("RYZEN", "")[0].isdigit():
          best = best.replace("RYZEN", "RYZEN ")
     
@@ -214,7 +268,6 @@ def extract_specs_regex(text):
                 specs["is_apple"] = True
             elif full_model.lower().startswith("i") and full_model[1].isdigit():
                 specs["cpu_models"].add(full_model.upper())
-            # Nuevos procesadores de gama baja
             elif any(x in full_model.lower() for x in ["celeron", "pentium", "atom", "xeon", "snapdragon", "sq1", "sq2", "sq3"]):
                  specs["cpu_models"].add(full_model.upper())
 
@@ -228,7 +281,6 @@ def extract_specs_regex(text):
     for gm in gpu_model_matches:
         specs["gpu_models"].add(gm.upper())
 
-    # --- Lógica de Negocio ---
     has_pc_cpu = (specs["cpu_brand"] in ["INTEL", "AMD"]) or any((m.startswith("I") and m[1:].isdigit()) or "RYZEN" in m for m in specs["cpu_models"])
     
     if has_pc_cpu and specs["is_apple"]:
@@ -260,8 +312,6 @@ def classify_prime_category(text_lower, specs):
         if "AMD" in cpu_str: pass 
         else: return "APPLE"
         
-    # Iteramos sobre las reglas. Al ser un diccionario ordenado (Python 3.7+),
-    # SURFACE se chequeará antes que el resto si lo ponemos antes, o confiamos en las keywords únicas.
     for cat, kws in SUB_CATEGORIES_RULES.items():
         if cat in ["GAMING", "APPLE"]: continue
         if is_match(text_lower, kws): return cat
@@ -269,8 +319,46 @@ def classify_prime_category(text_lower, specs):
     if "gaming" in text_lower: return "GAMING"
     return "GENERICO"
 
+# --- LÓGICA UNIFICADA DE EXTRACCIÓN (Igual que smart_poller) ---
+def get_prioritized_specs_and_category(title: str, description: str) -> Tuple[Dict, str]:
+    # 1. Sanitización
+    title_clean = sanitize_hardware_ambiguities(title)
+    desc_clean_spam = smart_truncate_spam(description)
+    desc_clean = sanitize_hardware_ambiguities(desc_clean_spam)
+    title_lower = title_clean.lower()
+    desc_truncated = desc_clean[:400] 
+    
+    # 2. Extracción
+    specs_title = extract_specs_regex(title_clean)
+    specs_desc = extract_specs_regex(desc_truncated)
+    
+    final_specs = {
+        "cpu": specs_title.get("cpu") if specs_title.get("cpu") else specs_desc.get("cpu"),
+        "ram": specs_title.get("ram") if specs_title.get("ram") else specs_desc.get("ram"),
+        "gpu": specs_title.get("gpu") if specs_title.get("gpu") else specs_desc.get("gpu"),
+    }
+    
+    # 3. Categoría (Locking)
+    category = "GENERICO"
+    if "chromebook" in title_lower:
+        category = "CHROMEBOOK"
+        final_specs["gpu"] = None 
+    elif any(x in title_lower for x in ["macbook", "mac air", "mac pro", "imac"]):
+        category = "APPLE"
+    elif "surface" in title_lower and "microsoft" in title_lower:
+         category = "SURFACE"
+    else:
+        full_text_clean = f"{title_clean}. {desc_truncated}"
+        category = classify_prime_category(full_text_clean.lower(), final_specs)
+    
+    # 4. Constraints
+    full_text_for_correction = f"{title_clean} {desc_truncated}"
+    final_specs = apply_category_constraints(final_specs, category, full_text_for_correction)
+        
+    return final_specs, category
+
 def process_data(input_file):
-    print(f"[*] Modo Regex Optimizado. Leyendo {input_file}...")
+    print(f"[*] Modo Regex Optimizado (Sincronizado). Leyendo {input_file}...")
     
     with open(input_file, "r", encoding="utf-8") as f:
         items = json.load(f)
@@ -283,23 +371,15 @@ def process_data(input_file):
 
     print(f"[*] Procesando {len(items)} ítems...")
     
-    # Límites de RAM por categoría
-    max_ram_by_category = {
-        "CHROMEBOOK": 16,
-        "GENERICO": 32,
-        "PREMIUM_ULTRABOOK": 32,
-        "SURFACE": 32 # Surface Go puede tener 64GB eMMC, limitamos RAM a 32GB
-    }
-    
     for item in items:
         price = clean_price(item)
         title = item.get('title', '') or ""
         desc = item.get('description', '') or ""
-        full_text = f"{title} {desc}"
         
-        # Extracción de specs ANTES de determinar segmento para poder usarlas en la regla de precio
-        specs = extract_specs_regex(full_text)
+        # --- NUEVO FLUJO PRIORITARIO ---
+        specs, cat = get_prioritized_specs_and_category(title, desc)
         
+        # Segmentación básica (JUNK/BROKEN/ACCESSORY) sigue siendo necesaria
         segment = determine_market_segment(title, desc, price, specs)
         
         if segment == "JUNK": continue
@@ -308,21 +388,6 @@ def process_data(input_file):
             market_data["SECONDARY"][segment].append(price)
             continue
             
-        # Clasificación
-        cat = classify_prime_category(full_text.lower(), specs)
-        
-        # Corrección RAM
-        limit = max_ram_by_category.get(cat, 128)
-        current_ram_val = 0
-        if specs["ram"]:
-            try:
-                current_ram_val = int(re.sub(r"[^0-9]", "", specs["ram"]))
-            except: pass
-        
-        if current_ram_val > limit:
-            corrected_ram = extract_ram(full_text.lower(), max_gb=limit)
-            specs["ram"] = corrected_ram 
-        
         if not specs["cpu"] and not specs["ram"]:
             market_data["UNCERTAIN"]["prices"].append(price)
             continue
@@ -382,19 +447,14 @@ def process_data(input_file):
     with open(OUTPUT_STATS_FILE, "w", encoding="utf-8") as f:
         json.dump(final_stats, f, indent=4)
         
-    print(f"\n[OK] Estadísticas completas guardadas en '{OUTPUT_STATS_FILE}'")
+    print(f"\n[OK] Estadísticas sincronizadas guardadas en '{OUTPUT_STATS_FILE}'")
     print(f"    Categorías detectadas: {list(final_stats.keys())}")
 
 if __name__ == "__main__":
     list_of_files = glob.glob('wallapop_raw_data_*.json') 
     if not list_of_files and os.path.exists("ejemplo_datos.txt"): 
-        print("[!] No se encontraron archivos raw con patrón, usando 'ejemplo_datos.txt' (asegúrate de que sea JSON válido array)")
-        try:
-            with open("ejemplo_datos.txt") as f:
-                content = f.read().strip()
-                if content.startswith("[") and content.endswith("]"):
-                    process_data("ejemplo_datos.txt")
-        except: pass
+        print("[!] No se encontraron archivos raw con patrón, usando 'ejemplo_datos.txt'")
+        process_data("ejemplo_datos.txt")
     elif list_of_files:
         latest_file = max(list_of_files, key=os.path.getctime)
         process_data(latest_file)
