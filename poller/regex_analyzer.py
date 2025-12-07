@@ -7,12 +7,12 @@ from collections import defaultdict
 from typing import List, Dict, Set, Any
 
 # --- CONFIGURACIÓN ---
-OUTPUT_STATS_FILE = "market_stats.json"
+OUTPUT_STATS_FILE = "market_stats_regex.json"
 
 # --- EXPRESIONES REGULARES COMPILADAS ---
 
 # 1. RAM: Captura "8GB", "8 gb", "16 gigas"
-# Lookahead negativo para evitar confundir con almacenamiento
+# Lookahead negativo para evitar confundir con almacenamiento si está explícito
 RE_RAM = re.compile(
     r'\b(\d+)\s*(?:gb|gigas?)\b(?!\s*(?:[\.,\-\/]\s*)?(?:de\s+)?(?:ssd|hdd|emmc|rom|almacenamiento|storage|disco|nvme|flash|interno|interna))', 
     re.IGNORECASE
@@ -82,7 +82,7 @@ def is_match(text_lower, keywords):
             return True
     return False
 
-def determine_market_segment(title, description, price):
+def determine_market_segment(title, description, price, specs=None):
     title_lower = title.lower()
     
     if price < 20: return "JUNK"
@@ -96,6 +96,12 @@ def determine_market_segment(title, description, price):
     
     if is_accessory_keyword:
         if price < 100: return "ACCESSORY"
+        
+        # NUEVA REGLA: Si es caro (>200) y tiene specs (CPU o RAM), es un portátil aunque diga "funda"
+        has_specs = specs and (specs.get("cpu") or specs.get("ram"))
+        if price > 200 and has_specs:
+            return "PRIME"
+
         if any(title_lower.startswith(x) for x in ["funda", "carcasa", "caja", "dock", "base"]):
             return "ACCESSORY"
         if is_laptop: return "PRIME"
@@ -291,7 +297,10 @@ def process_data(input_file):
         desc = item.get('description', '') or ""
         full_text = f"{title} {desc}"
         
-        segment = determine_market_segment(title, desc, price)
+        # Extracción de specs ANTES de determinar segmento para poder usarlas en la regla de precio
+        specs = extract_specs_regex(full_text)
+        
+        segment = determine_market_segment(title, desc, price, specs)
         
         if segment == "JUNK": continue
         
@@ -299,8 +308,6 @@ def process_data(input_file):
             market_data["SECONDARY"][segment].append(price)
             continue
             
-        specs = extract_specs_regex(full_text)
-        
         # Clasificación
         cat = classify_prime_category(full_text.lower(), specs)
         
