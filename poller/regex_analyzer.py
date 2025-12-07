@@ -1,27 +1,45 @@
 import json
 import statistics
-import spacy
 import re
 import glob
 import os
-from spacy.pipeline import EntityRuler
 from collections import defaultdict
-from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Set, Any
 
 # --- CONFIGURACIÓN ---
-OUTPUT_STATS_FILE = "market_stats_full.json"
+OUTPUT_STATS_FILE = "market_stats.json"
 
-# --- PALABRAS CLAVE PARA CLASIFICACIÓN ---
+# --- EXPRESIONES REGULARES COMPILADAS ---
 
-# 1. Rotos / Para piezas (Mercado Secundario)
+# 1. RAM: Captura "8GB", "8 gb", "16 gigas"
+# Lookahead negativo para evitar confundir con almacenamiento
+RE_RAM = re.compile(
+    r'\b(\d+)\s*(?:gb|gigas?)\b(?!\s*(?:[\.,\-\/]\s*)?(?:de\s+)?(?:ssd|hdd|emmc|rom|almacenamiento|storage|disco|nvme|flash|interno|interna))', 
+    re.IGNORECASE
+)
+
+# 2. CPU: Patrones para detectar marcas y modelos
+RE_CPU_BRAND = re.compile(r'\b(intel|amd|apple|qualcomm|microsoft)\b', re.IGNORECASE)
+RE_CPU_MODELS = [
+    re.compile(r'\b(core\s*-?)?(i[3579])\b', re.IGNORECASE),      
+    re.compile(r'\b(ryzen)\s*-?([3579])\b', re.IGNORECASE),       
+    re.compile(r'\b(m[123])\s*(pro|max|ultra)?\b', re.IGNORECASE),
+    # Nuevos modelos de gama baja / específicos
+    re.compile(r'\b(celeron|pentium|atom|xeon)\b', re.IGNORECASE),
+    re.compile(r'\b(snapdragon|sq[123])\b', re.IGNORECASE)
+]
+
+# 3. GPU: Patrones para gráficas
+RE_GPU_BRAND = re.compile(r'\b(nvidia|amd|radeon|geforce)\b', re.IGNORECASE)
+RE_GPU_MODEL = re.compile(r'\b((?:rtx|gtx|rx)\s*-?\d{3,4}[a-z]*)\b', re.IGNORECASE)
+
+# --- PALABRAS CLAVE ---
 BROKEN_KEYWORDS = [
     "roto", "averiado", "fallo", "bloqueado", "icloud", "bios", "pantalla rota", 
     "no enciende", "no funciona", "para piezas", "despiece", "repuesto", "tarada", 
     "golpe", "mojado", "water", "broken", "parts", "read", "leer", "reparar"
 ]
 
-# 2. Accesorios INEQUÍVOCOS (Mercado Secundario)
 ACCESSORY_KEYWORDS = [
     "funda", "carcasa", "maletin", "mochila", "bag", "sleeve", "skin",
     "dock", "docking", "hub", "base", "soporte", "stand", "cooler", "ventilador",
@@ -31,7 +49,6 @@ ACCESSORY_KEYWORDS = [
     "protector", "cristal", "pegatina"
 ]
 
-# 3. Indicadores Fuertes de Portátil (Mercado Primario)
 LAPTOP_INDICATORS = [
     "portatil", "laptop", "macbook", "ordenador", "pc", "computer", 
     "notebook", "netbook", "ultrabook", "convertible", "2 en 1", "2 in 1",
@@ -41,51 +58,16 @@ LAPTOP_INDICATORS = [
     "matebook", "magicbook", "galaxy book", "prestige", "modern", "katana", "cyborg"
 ]
 
-# --- PATRONES SPACY (HARDWARE) ---
-PATTERNS = [
-    # RAM (Estricta)
-    {"label": "RAM", "pattern": [{"TEXT": {"REGEX": r"^\d+$"}}, {"LOWER": {"IN": ["gb", "giga", "gigas"]}}]},
-    {"label": "RAM", "pattern": [{"TEXT": {"REGEX": r"^\d+gb$"}}]},
-    
-    # STORAGE (Para excluir)
-    {"label": "STORAGE", "pattern": [{"TEXT": {"REGEX": r"^\d+(gb|tb)$"}}, {"LOWER": {"IN": ["ssd", "hdd", "nvme"]}}]},
-    
-    # CPU
-    {"label": "CPU_BRAND", "pattern": [{"LOWER": {"IN": ["intel", "amd", "apple"]}}]},
-    {"label": "CPU_MODEL", "pattern": [{"LOWER": {"REGEX": r"^i[3579]$"}}]},
-    {"label": "CPU_MODEL", "pattern": [{"LOWER": {"REGEX": r"^core-?i[3579]$"}}]},
-    {"label": "CPU_MODEL", "pattern": [{"LOWER": {"REGEX": r"^i9$"}}]},
-    {"label": "CPU_MODEL", "pattern": [{"LOWER": "ryzen"}, {"TEXT": {"REGEX": r"^[3579]$"}}]},
-    {"label": "CPU_MODEL", "pattern": [{"LOWER": {"REGEX": r"^ryzen[3579]$"}}]},
-    {"label": "CPU_APPLE", "pattern": [{"LOWER": {"REGEX": r"^m[123]$"}}]},
-    
-    # GPU
-    {"label": "GPU_BRAND", "pattern": [{"LOWER": {"IN": ["nvidia", "amd"]}}]},
-    {"label": "GPU_MODEL", "pattern": [{"LOWER": {"IN": ["rtx", "gtx", "rx"]}}, {"TEXT": {"REGEX": r"^\d{3,4}[a-z]*$"}}]},
-    {"label": "GPU_MODEL", "pattern": [{"TEXT": {"REGEX": r"^(rtx|gtx)\d{3,4}[a-z]*$"}}]},
-]
-
-# Categorías Principales (Prime Market)
+# Definición de categorías. 
+# IMPORTANTE: SURFACE ahora tiene su propia entrada y se ha eliminado de PREMIUM_ULTRABOOK
 SUB_CATEGORIES_RULES = {
     "APPLE": ["macbook", "mac", "apple", "macos"],
+    "SURFACE": ["surface", "microsoft surface"], 
     "WORKSTATION": ["thinkpad", "latitude", "precision", "zbook", "quadro", "elitebook", "probook"],
-    "PREMIUM_ULTRABOOK": ["xps", "spectre", "zenbook", "gram", "yoga", "matebook", "surface"],
+    "PREMIUM_ULTRABOOK": ["xps", "spectre", "zenbook", "gram", "yoga", "matebook"], 
     "GAMING": ["gaming", "gamer", "rog", "tuf", "alienware", "msi", "omen", "predator", "legion", "nitro", "victus", "loq", "blade", "razer"],
     "CHROMEBOOK": ["chromebook", "chrome"]
 }
-
-def load_spacy_model():
-    print("[*] Cargando modelo spaCy...")
-    try:
-        nlp = spacy.load("es_core_news_sm")
-    except OSError:
-        print("[!] Modelo no encontrado. Instala: python -m spacy download es_core_news_sm")
-        return None
-    
-    if "entity_ruler" in nlp.pipe_names: nlp.remove_pipe("entity_ruler")
-    ruler = nlp.add_pipe("entity_ruler", before="ner")
-    ruler.add_patterns(PATTERNS)
-    return nlp
 
 def clean_price(item):
     try:
@@ -125,68 +107,43 @@ def determine_market_segment(title, description, price):
 
     return "PRIME"
 
-def classify_prime_category(text_lower, specs):
-    """
-    Clasificación con reglas de negocio estrictas para evitar
-    Apple con AMD o M2 en Gaming.
-    """
-    cpu_str = (specs.get("cpu") or "").upper()
-    
-    # 1. PRIORIDAD ABSOLUTA: Apple Silicon (M1, M2, M3)
-    # Si tiene un procesador Apple, ES un Apple. No puede ser Gaming (aunque sirva para ello).
-    if "APPLE M" in cpu_str:
-        return "APPLE"
-
-    # 2. Prioridad GPU (Gaming/Workstation)
-    if specs.get("gpu"):
-        if "quadro" in specs["gpu"].lower(): return "WORKSTATION"
-        return "GAMING"
-    
-    # 3. Detección por Texto (Apple vs Resto)
-    # "macbook" en título -> Apple
-    if "apple" in specs.get("cpu_brand", "").lower() or "macbook" in text_lower or "macos" in text_lower:
-        # REGLA DE ORO: Un Mac no puede tener procesador AMD Ryzen.
-        # Si detectamos "AMD" en la CPU, asumimos que es un PC (ej: "Cambio PC Ryzen por Mac")
-        if "AMD" in cpu_str:
-            pass # No retornamos APPLE, dejamos que fluya a las reglas de PC
-        else:
-            return "APPLE"
-        
-    # 4. Resto de reglas por keywords
-    for cat, kws in SUB_CATEGORIES_RULES.items():
-        if cat in ["GAMING", "APPLE"]: continue
-        if is_match(text_lower, kws): return cat
-        
-    if "gaming" in text_lower: return "GAMING"
-    return "GENERICO"
-
-def is_valid_ram(ram_text):
-    try:
-        val = int(re.sub(r"[^0-9]", "", ram_text))
-        return val in [4, 6, 8, 12, 16, 20, 24, 32, 40, 48, 64]
-    except: return False
+def is_valid_ram(ram_val):
+    return ram_val in [4, 6, 8, 12, 16, 20, 24, 32, 40, 48, 64]
 
 def clean_cpu_string(brand, models, is_apple):
     models = sorted(list(models), reverse=True)
     if not models: return None
-    best = models[0]
+    best = models[0].upper() 
     
-    if is_apple or "M" in best: brand = "APPLE"
-    elif "RYZEN" in best: brand = "AMD"
-    elif best.startswith("I") and len(best)>=2: brand = "INTEL"
+    # Normalización de marcas
+    if is_apple or "M1" in best or "M2" in best or "M3" in best: 
+        brand = "APPLE"
+    elif "RYZEN" in best: 
+        brand = "AMD"
+    elif best.startswith("I") and len(best) >= 2 and best[1].isdigit(): 
+        brand = "INTEL"
+    elif any(x in best for x in ["CELERON", "PENTIUM", "ATOM", "XEON"]):
+        brand = "INTEL"
+    elif any(x in best for x in ["SNAPDRAGON", "SQ1", "SQ2", "SQ3"]):
+        brand = "QUALCOMM" # O Microsoft para SQ, pero Qualcomm es el fabricante base
     
-    if "RYZEN" in best and best.replace("RYZEN", "")[0].isdigit():
+    # Formateo
+    if "RYZEN" in best and best.replace("RYZEN", "") and best.replace("RYZEN", "")[0].isdigit():
          best = best.replace("RYZEN", "RYZEN ")
+    
+    if brand == "APPLE" and not best.startswith("APPLE"):
+        return f"APPLE {best}"
 
     return f"{brand} {best}".strip() if brand else best
 
 def clean_gpu_string(brand, models):
     models = sorted(list(models), reverse=True)
     if not models: return None
-    best = models[0]
+    best = models[0].upper()
     
     match = re.match(r"^([A-Z]+)(\d.*)$", best)
-    if match and " " not in best: best = f"{match.group(1)} {match.group(2)}"
+    if match and " " not in best: 
+        best = f"{match.group(1)} {match.group(2)}"
     
     if any(x in best for x in ["RTX", "GTX", "MX", "QUADRO"]): brand = "NVIDIA"
     elif any(x in best for x in ["RX", "RADEON", "FIREPRO"]): brand = "AMD"
@@ -194,37 +151,82 @@ def clean_gpu_string(brand, models):
     final = best.replace(brand or "", "").strip()
     return f"{brand} {final}".strip() if brand else final
 
-def extract_specs(doc):
-    specs = {"ram": None, "cpu_brand": None, "cpu_models": set(), "gpu_brand": None, "gpu_models": set(), "is_apple": False}
+def extract_ram(text_lower, max_gb=128):
+    ram_matches = RE_RAM.findall(text_lower)
+    best_ram = 0
+    ram_str = None
     
-    for ent in doc.ents:
-        lbl, txt = ent.label_, ent.text.upper().strip()
+    for val_str in ram_matches:
+        try:
+            val = int(val_str)
+            if is_valid_ram(val) and val <= max_gb:
+                if val > best_ram:
+                    best_ram = val
+                    ram_str = f"{val}GB"
+        except: pass
         
-        if lbl == "RAM":
-            clean = txt.replace(" ", "").replace("GIGAS", "GB").replace("GB", "") + "GB"
-            if is_valid_ram(clean):
-                if not specs["ram"]:
-                    specs["ram"] = clean
-                else:
-                    try:
-                        curr = int(re.sub(r"[^0-9]", "", specs["ram"]))
-                        newv = int(re.sub(r"[^0-9]", "", clean))
-                        if newv > curr: specs["ram"] = clean
-                    except: pass
-                    
-        elif lbl == "CPU_BRAND": specs["cpu_brand"] = txt
-        elif lbl == "CPU_MODEL": 
-            norm = txt.replace("CORE", "").replace("-", "").strip()
-            specs["cpu_models"].add(norm)
-        elif lbl == "CPU_APPLE": 
-            specs["cpu_models"].add(txt)
-            specs["is_apple"] = True
-        elif lbl == "GPU_BRAND": specs["gpu_brand"] = txt
-        elif lbl == "GPU_MODEL": specs["gpu_models"].add(txt)
+    return ram_str
 
+def extract_specs_regex(text):
+    text_lower = text.lower()
+    
+    specs = {
+        "ram": None, 
+        "cpu_brand": None, 
+        "cpu_models": set(), 
+        "gpu_brand": None, 
+        "gpu_models": set(), 
+        "is_apple": False
+    }
+
+    specs["ram"] = extract_ram(text_lower)
+
+    # Extracción CPU
+    brand_matches = RE_CPU_BRAND.findall(text_lower)
+    if brand_matches:
+        specs["cpu_brand"] = brand_matches[0].upper() 
+
+    for pattern in RE_CPU_MODELS:
+        matches = pattern.findall(text_lower)
+        for m in matches:
+            full_model = ""
+            if isinstance(m, tuple):
+                parts = [p for p in m if p]
+                if parts[0].lower().startswith("m") and len(parts) > 1:
+                     full_model = f"{parts[0]} {parts[1]}"
+                else:
+                     full_model = "".join(parts).replace(" ", "").replace("-", "")
+            else:
+                full_model = m.replace(" ", "")
+            
+            # Normalización
+            if "ryzen" in full_model.lower():
+                num = re.sub(r"[^0-9]", "", full_model)
+                specs["cpu_models"].add(f"RYZEN{num}")
+            elif full_model.lower().startswith("m") and full_model[1].isdigit():
+                specs["cpu_models"].add(full_model.upper())
+                specs["is_apple"] = True
+            elif full_model.lower().startswith("i") and full_model[1].isdigit():
+                specs["cpu_models"].add(full_model.upper())
+            # Nuevos procesadores de gama baja
+            elif any(x in full_model.lower() for x in ["celeron", "pentium", "atom", "xeon", "snapdragon", "sq1", "sq2", "sq3"]):
+                 specs["cpu_models"].add(full_model.upper())
+
+    # Extracción GPU
+    gpu_brand_matches = RE_GPU_BRAND.findall(text_lower)
+    if gpu_brand_matches:
+        specs["gpu_brand"] = gpu_brand_matches[0].upper()
+        if specs["gpu_brand"] in ["GEFORCE"]: specs["gpu_brand"] = "NVIDIA"
+
+    gpu_model_matches = RE_GPU_MODEL.findall(text_lower)
+    for gm in gpu_model_matches:
+        specs["gpu_models"].add(gm.upper())
+
+    # --- Lógica de Negocio ---
     has_pc_cpu = (specs["cpu_brand"] in ["INTEL", "AMD"]) or any((m.startswith("I") and m[1:].isdigit()) or "RYZEN" in m for m in specs["cpu_models"])
+    
     if has_pc_cpu and specs["is_apple"]:
-        specs["cpu_models"] = {m for m in specs["cpu_models"] if not re.match(r"^M[123]$", m)}
+        specs["cpu_models"] = {m for m in specs["cpu_models"] if not re.match(r"^M[123].*$", m)}
         specs["is_apple"] = False
         
     if specs["is_apple"]:
@@ -238,11 +240,32 @@ def extract_specs(doc):
     }
     return final
 
-def process_data(input_file):
-    nlp = load_spacy_model()
-    if not nlp: return
+def classify_prime_category(text_lower, specs):
+    cpu_str = (specs.get("cpu") or "").upper()
+    
+    if "APPLE M" in cpu_str: return "APPLE"
 
-    print(f"[*] Leyendo {input_file}...")
+    if specs.get("gpu"):
+        gpu_str = specs["gpu"].lower()
+        if "quadro" in gpu_str: return "WORKSTATION"
+        return "GAMING"
+    
+    if "apple" in specs.get("cpu_brand", "").lower() or "macbook" in text_lower or "macos" in text_lower:
+        if "AMD" in cpu_str: pass 
+        else: return "APPLE"
+        
+    # Iteramos sobre las reglas. Al ser un diccionario ordenado (Python 3.7+),
+    # SURFACE se chequeará antes que el resto si lo ponemos antes, o confiamos en las keywords únicas.
+    for cat, kws in SUB_CATEGORIES_RULES.items():
+        if cat in ["GAMING", "APPLE"]: continue
+        if is_match(text_lower, kws): return cat
+        
+    if "gaming" in text_lower: return "GAMING"
+    return "GENERICO"
+
+def process_data(input_file):
+    print(f"[*] Modo Regex Optimizado. Leyendo {input_file}...")
+    
     with open(input_file, "r", encoding="utf-8") as f:
         items = json.load(f)
 
@@ -252,16 +275,21 @@ def process_data(input_file):
         "UNCERTAIN": {"prices": []}     
     }
 
-    texts = [f"{i.get('title', '')}. {i.get('description', '')}" for i in items]
-    docs = nlp.pipe(texts, batch_size=100)
+    print(f"[*] Procesando {len(items)} ítems...")
     
-    print("[*] Clasificando y extrayendo datos...")
+    # Límites de RAM por categoría
+    max_ram_by_category = {
+        "CHROMEBOOK": 16,
+        "GENERICO": 32,
+        "PREMIUM_ULTRABOOK": 32,
+        "SURFACE": 32 # Surface Go puede tener 64GB eMMC, limitamos RAM a 32GB
+    }
     
-    for i, doc in enumerate(docs):
-        item = items[i]
+    for item in items:
         price = clean_price(item)
-        title = item.get('title', '')
-        desc = item.get('description', '')
+        title = item.get('title', '') or ""
+        desc = item.get('description', '') or ""
+        full_text = f"{title} {desc}"
         
         segment = determine_market_segment(title, desc, price)
         
@@ -271,14 +299,27 @@ def process_data(input_file):
             market_data["SECONDARY"][segment].append(price)
             continue
             
-        specs = extract_specs(doc)
+        specs = extract_specs_regex(full_text)
+        
+        # Clasificación
+        cat = classify_prime_category(full_text.lower(), specs)
+        
+        # Corrección RAM
+        limit = max_ram_by_category.get(cat, 128)
+        current_ram_val = 0
+        if specs["ram"]:
+            try:
+                current_ram_val = int(re.sub(r"[^0-9]", "", specs["ram"]))
+            except: pass
+        
+        if current_ram_val > limit:
+            corrected_ram = extract_ram(full_text.lower(), max_gb=limit)
+            specs["ram"] = corrected_ram 
         
         if not specs["cpu"] and not specs["ram"]:
             market_data["UNCERTAIN"]["prices"].append(price)
             continue
             
-        cat = classify_prime_category((title + " " + desc).lower(), specs)
-        
         group = market_data["PRIME"][cat]
         group["prices"].append(price)
         if specs["cpu"]: group["specs"]["cpu"][specs["cpu"]].append(price)
@@ -338,11 +379,17 @@ def process_data(input_file):
     print(f"    Categorías detectadas: {list(final_stats.keys())}")
 
 if __name__ == "__main__":
-    import glob
-    import os
     list_of_files = glob.glob('wallapop_raw_data_*.json') 
-    if list_of_files:
+    if not list_of_files and os.path.exists("ejemplo_datos.txt"): 
+        print("[!] No se encontraron archivos raw con patrón, usando 'ejemplo_datos.txt' (asegúrate de que sea JSON válido array)")
+        try:
+            with open("ejemplo_datos.txt") as f:
+                content = f.read().strip()
+                if content.startswith("[") and content.endswith("]"):
+                    process_data("ejemplo_datos.txt")
+        except: pass
+    elif list_of_files:
         latest_file = max(list_of_files, key=os.path.getctime)
         process_data(latest_file)
     else:
-        print("[!] No se encontraron archivos raw.")
+        print("[!] No se encontraron archivos de datos.")
