@@ -1,0 +1,880 @@
+{
+    "WORKSTATION": {
+        "mean": 268.71,
+        "median": 200.0,
+        "stdev": 223.26,
+        "sample_size": 2337,
+        "specs_breakdown": {
+            "cpu": {
+                "INTEL I3": {
+                    "mean": 124.42,
+                    "median": 100.0,
+                    "stdev": 69.22,
+                    "count": 37
+                },
+                "INTEL I5": {
+                    "mean": 203.2,
+                    "median": 185.0,
+                    "stdev": 115.2,
+                    "count": 850
+                },
+                "INTEL I7": {
+                    "mean": 346.9,
+                    "median": 300.0,
+                    "stdev": 242.89,
+                    "count": 305
+                },
+                "AMD RYZEN 7": {
+                    "mean": 419.99,
+                    "median": 365.0,
+                    "stdev": 181.07,
+                    "count": 26
+                },
+                "AMD RYZEN 5": {
+                    "mean": 437.15,
+                    "median": 359.0,
+                    "stdev": 236.25,
+                    "count": 79
+                },
+                "INTEL I9": {
+                    "mean": 759.85,
+                    "median": 750.0,
+                    "stdev": 362.18,
+                    "count": 13
+                },
+                "AMD RYZEN 3": {
+                    "mean": 145.0,
+                    "median": 132.5,
+                    "stdev": 51.15,
+                    "count": 4
+                }
+            },
+            "ram": {
+                "32GB": {
+                    "mean": 535.65,
+                    "median": 445.0,
+                    "stdev": 354.33,
+                    "count": 139
+                },
+                "16GB": {
+                    "mean": 328.45,
+                    "median": 280.0,
+                    "stdev": 184.45,
+                    "count": 678
+                },
+                "8GB": {
+                    "mean": 177.0,
+                    "median": 160.0,
+                    "stdev": 91.75,
+                    "count": 596
+                },
+                "64GB": {
+                    "mean": 665.08,
+                    "median": 650.0,
+                    "stdev": 373.24,
+                    "count": 25
+                },
+                "12GB": {
+                    "mean": 167.62,
+                    "median": 170.0,
+                    "stdev": 66.2,
+                    "count": 19
+                },
+                "4GB": {
+                    "mean": 115.44,
+                    "median": 99.0,
+                    "stdev": 115.01,
+                    "count": 70
+                },
+                "24GB": {
+                    "mean": 334.4,
+                    "median": 330.0,
+                    "stdev": 89.19,
+                    "count": 15
+                },
+                "20GB": {
+                    "mean": 198.0,
+                    "median": 225.0,
+                    "stdev": 50.32,
+                    "count": 5
+                },
+                "48GB": {
+                    "mean": 398.5,
+                    "median": 384.5,
+                    "stdev": 64.34,
+                    "count": 4
+                },
+                "6GB": {
+                    "mean": 124.13,
+                    "median": 120.0,
+                    "stdev": 62.5,
+                    "count": 15
+                }
+            },
+            "gpu": {}
+        }
+    },
+    "APPLE": {
+        "mean": 525.67,
+        "median": 400.0,
+        "stdev": 448.83,
+        "sample_size": 5230,
+        "specs_breakdown": {
+            "cpu": {
+                "APPLE M1": {
+                    "mean": 647.05,
+                    "median": 560.0,
+                    "stdev": 268.41,
+                    "count": 681
+                },
+                "INTEL I5": {
+                    "mean": 284.99,
+                    "median": 260.0,
+                    "stdev": 135.28,
+                    "count": 927
+                },
+                "INTEL I7": {
+                    "mean": 384.61,
+                    "median": 359.0,
+                    "stdev": 182.4,
+                    "count": 423
+                },
+                "APPLE M2": {
+                    "mean": 774.84,
+                    "median": 700.0,
+                    "stdev": 321.63,
+                    "count": 454
+                },
+                "APPLE M3": {
+                    "mean": 1016.56,
+                    "median": 850.0,
+                    "stdev": 523.93,
+                    "count": 313
+                },
+                "INTEL I3": {
+                    "mean": 389.3,
+                    "median": 400.0,
+                    "stdev": 92.66,
+                    "count": 43
+                },
+                "INTEL I9": {
+                    "mean": 687.63,
+                    "median": 650.0,
+                    "stdev": 219.66,
+                    "count": 110
+                },
+                "AMD RYZEN 7": {
+                    "mean": 559.25,
+                    "median": 600.0,
+                    "stdev": 192.41,
+                    "count": 4
+                },
+                "AMD RYZEN 5": {
+                    "mean": 450.0,
+                    "median": 430.0,
+                    "stdev": 141.07,
+                    "count": 3
+                }
+            },
+            "ram": {
+                "8GB": {
+                    "mean": 420.65,
+                    "median": 390.0,
+                    "stdev": 224.02,
+                    "count": 1392
+                },
+                "16GB": {
+                    "mean": 678.39,
+                    "median": 649.0,
+                    "stdev": 357.7,
+                    "count": 1046
+                },
+                "12GB": {
+                    "mean": 233.8,
+                    "median": 199.0,
+                    "stdev": 86.87,
+                    "count": 5
+                },
+                "4GB": {
+                    "mean": 156.04,
+                    "median": 145.0,
+                    "stdev": 98.04,
+                    "count": 166
+                },
+                "48GB": {
+                    "mean": 3080.84,
+                    "median": 2899.0,
+                    "stdev": 820.05,
+                    "count": 13
+                },
+                "64GB": {
+                    "mean": 1465.63,
+                    "median": 1275.0,
+                    "stdev": 795.46,
+                    "count": 22
+                },
+                "24GB": {
+                    "mean": 1566.02,
+                    "median": 1487.0,
+                    "stdev": 485.65,
+                    "count": 85
+                },
+                "32GB": {
+                    "mean": 967.82,
+                    "median": 780.0,
+                    "stdev": 532.63,
+                    "count": 113
+                },
+                "6GB": {
+                    "mean": 202.5,
+                    "median": 115.0,
+                    "stdev": 237.48,
+                    "count": 12
+                }
+            },
+            "gpu": {}
+        }
+    },
+    "GAMING": {
+        "mean": 665.1,
+        "median": 570.0,
+        "stdev": 461.36,
+        "sample_size": 1824,
+        "specs_breakdown": {
+            "cpu": {
+                "AMD RYZEN 5": {
+                    "mean": 473.72,
+                    "median": 450.0,
+                    "stdev": 188.7,
+                    "count": 92
+                },
+                "INTEL I9": {
+                    "mean": 1381.84,
+                    "median": 1300.0,
+                    "stdev": 708.42,
+                    "count": 69
+                },
+                "INTEL I5": {
+                    "mean": 454.16,
+                    "median": 450.0,
+                    "stdev": 189.02,
+                    "count": 175
+                },
+                "INTEL I7": {
+                    "mean": 584.34,
+                    "median": 550.0,
+                    "stdev": 313.6,
+                    "count": 407
+                },
+                "AMD RYZEN 7": {
+                    "mean": 681.8,
+                    "median": 670.0,
+                    "stdev": 230.07,
+                    "count": 251
+                },
+                "AMD RYZEN 9": {
+                    "mean": 1158.67,
+                    "median": 994.5,
+                    "stdev": 715.28,
+                    "count": 40
+                },
+                "INTEL I3": {
+                    "mean": 181.25,
+                    "median": 162.5,
+                    "stdev": 84.1,
+                    "count": 4
+                }
+            },
+            "ram": {
+                "16GB": {
+                    "mean": 595.3,
+                    "median": 550.0,
+                    "stdev": 299.1,
+                    "count": 799
+                },
+                "32GB": {
+                    "mean": 1007.97,
+                    "median": 900.0,
+                    "stdev": 565.6,
+                    "count": 317
+                },
+                "8GB": {
+                    "mean": 426.92,
+                    "median": 350.0,
+                    "stdev": 264.9,
+                    "count": 147
+                },
+                "24GB": {
+                    "mean": 667.27,
+                    "median": 665.0,
+                    "stdev": 303.43,
+                    "count": 30
+                },
+                "4GB": {
+                    "mean": 412.78,
+                    "median": 382.5,
+                    "stdev": 317.7,
+                    "count": 32
+                },
+                "12GB": {
+                    "mean": 405.82,
+                    "median": 260.0,
+                    "stdev": 477.52,
+                    "count": 11
+                },
+                "20GB": {
+                    "mean": 449.75,
+                    "median": 474.5,
+                    "stdev": 195.87,
+                    "count": 4
+                },
+                "64GB": {
+                    "mean": 1381.74,
+                    "median": 999.0,
+                    "stdev": 924.71,
+                    "count": 39
+                },
+                "6GB": {
+                    "mean": 811.5,
+                    "median": 750.0,
+                    "stdev": 382.17,
+                    "count": 12
+                }
+            },
+            "gpu": {
+                "NVIDIA RTX 4080": {
+                    "mean": 1838.91,
+                    "median": 1874.0,
+                    "stdev": 446.37,
+                    "count": 12
+                },
+                "NVIDIA GTX 950": {
+                    "mean": 221.6,
+                    "median": 200.0,
+                    "stdev": 91.62,
+                    "count": 15
+                },
+                "NVIDIA GTX 1650": {
+                    "mean": 428.64,
+                    "median": 400.0,
+                    "stdev": 167.83,
+                    "count": 162
+                },
+                "NVIDIA RTX 3050": {
+                    "mean": 603.49,
+                    "median": 589.5,
+                    "stdev": 178.25,
+                    "count": 208
+                },
+                "NVIDIA GTX 1050": {
+                    "mean": 333.23,
+                    "median": 305.0,
+                    "stdev": 152.96,
+                    "count": 112
+                },
+                "NVIDIA RTX 5060": {
+                    "mean": 988.88,
+                    "median": 1050.0,
+                    "stdev": 425.29,
+                    "count": 25
+                },
+                "NVIDIA RTX 3060": {
+                    "mean": 670.4,
+                    "median": 650.0,
+                    "stdev": 173.65,
+                    "count": 128
+                },
+                "NVIDIA GTX 850": {
+                    "mean": 201.25,
+                    "median": 230.0,
+                    "stdev": 92.23,
+                    "count": 4
+                },
+                "NVIDIA RTX 3070": {
+                    "mean": 910.21,
+                    "median": 850.0,
+                    "stdev": 332.03,
+                    "count": 47
+                },
+                "NVIDIA RTX 4050": {
+                    "mean": 763.25,
+                    "median": 720.0,
+                    "stdev": 257.82,
+                    "count": 57
+                },
+                "NVIDIA RTX 4070": {
+                    "mean": 1292.55,
+                    "median": 1200.0,
+                    "stdev": 360.91,
+                    "count": 73
+                },
+                "NVIDIA RTX 4090": {
+                    "mean": 2645.77,
+                    "median": 2500.0,
+                    "stdev": 813.73,
+                    "count": 13
+                },
+                "NVIDIA RTX 1650": {
+                    "mean": 405.83,
+                    "median": 412.5,
+                    "stdev": 43.64,
+                    "count": 6
+                },
+                "NVIDIA RTX 4060": {
+                    "mean": 920.95,
+                    "median": 870.0,
+                    "stdev": 279.06,
+                    "count": 151
+                },
+                "NVIDIA GTX 1660": {
+                    "mean": 511.07,
+                    "median": 480.0,
+                    "stdev": 258.9,
+                    "count": 14
+                },
+                "NVIDIA RTX 2050": {
+                    "mean": 488.2,
+                    "median": 500.0,
+                    "stdev": 97.45,
+                    "count": 15
+                },
+                "NVIDIA RTX 5080": {
+                    "mean": 2288.38,
+                    "median": 2400.0,
+                    "stdev": 765.31,
+                    "count": 13
+                },
+                "NVIDIA RTX 5000": {
+                    "mean": 1174.0,
+                    "median": 980.0,
+                    "stdev": 521.9,
+                    "count": 5
+                },
+                "NVIDIA RTX 2060": {
+                    "mean": 643.27,
+                    "median": 575.0,
+                    "stdev": 387.06,
+                    "count": 66
+                },
+                "NVIDIA GTX 1060": {
+                    "mean": 357.88,
+                    "median": 370.0,
+                    "stdev": 138.98,
+                    "count": 26
+                },
+                "NVIDIA RTX 2070": {
+                    "mean": 699.62,
+                    "median": 699.0,
+                    "stdev": 186.77,
+                    "count": 21
+                },
+                "NVIDIA RTX 5050": {
+                    "mean": 864.85,
+                    "median": 800.0,
+                    "stdev": 343.52,
+                    "count": 13
+                },
+                "NVIDIA RTX 5090": {
+                    "mean": 3166.33,
+                    "median": 3199.99,
+                    "stdev": 751.07,
+                    "count": 3
+                },
+                "NVIDIA GTX 960": {
+                    "mean": 281.66,
+                    "median": 279.0,
+                    "stdev": 132.4,
+                    "count": 29
+                },
+                "NVIDIA RTX 5070": {
+                    "mean": 1748.17,
+                    "median": 1750.0,
+                    "stdev": 420.06,
+                    "count": 12
+                },
+                "NVIDIA RTX 3080": {
+                    "mean": 836.73,
+                    "median": 950.0,
+                    "stdev": 494.76,
+                    "count": 15
+                },
+                "NVIDIA RTX 3050TI": {
+                    "mean": 546.0,
+                    "median": 497.5,
+                    "stdev": 146.36,
+                    "count": 10
+                },
+                "NVIDIA GTX 860": {
+                    "mean": 197.0,
+                    "median": 200.0,
+                    "stdev": 30.74,
+                    "count": 5
+                },
+                "NVIDIA GTX 1070": {
+                    "mean": 439.38,
+                    "median": 387.5,
+                    "stdev": 210.99,
+                    "count": 8
+                },
+                "NVIDIA RTX 2080": {
+                    "mean": 866.67,
+                    "median": 750.0,
+                    "stdev": 202.07,
+                    "count": 3
+                }
+            }
+        }
+    },
+    "GENERICO": {
+        "mean": 207.16,
+        "median": 150.0,
+        "stdev": 232.21,
+        "sample_size": 9855,
+        "specs_breakdown": {
+            "cpu": {
+                "INTEL I3": {
+                    "mean": 143.34,
+                    "median": 120.0,
+                    "stdev": 91.96,
+                    "count": 636
+                },
+                "AMD RYZEN 7": {
+                    "mean": 443.79,
+                    "median": 400.0,
+                    "stdev": 193.51,
+                    "count": 161
+                },
+                "INTEL I7": {
+                    "mean": 313.67,
+                    "median": 254.5,
+                    "stdev": 241.71,
+                    "count": 692
+                },
+                "AMD RYZEN 5": {
+                    "mean": 327.58,
+                    "median": 315.0,
+                    "stdev": 133.75,
+                    "count": 201
+                },
+                "INTEL I5": {
+                    "mean": 221.21,
+                    "median": 190.0,
+                    "stdev": 146.69,
+                    "count": 1144
+                },
+                "AMD RYZEN 3": {
+                    "mean": 211.53,
+                    "median": 195.0,
+                    "stdev": 83.81,
+                    "count": 64
+                },
+                "AMD RYZEN 9": {
+                    "mean": 971.82,
+                    "median": 900.0,
+                    "stdev": 275.02,
+                    "count": 11
+                },
+                "INTEL I9": {
+                    "mean": 948.78,
+                    "median": 869.0,
+                    "stdev": 660.55,
+                    "count": 9
+                }
+            },
+            "ram": {
+                "16GB": {
+                    "mean": 372.57,
+                    "median": 350.0,
+                    "stdev": 229.13,
+                    "count": 1120
+                },
+                "8GB": {
+                    "mean": 195.29,
+                    "median": 177.0,
+                    "stdev": 120.47,
+                    "count": 1588
+                },
+                "64GB": {
+                    "mean": 198.31,
+                    "median": 110.0,
+                    "stdev": 333.21,
+                    "count": 78
+                },
+                "4GB": {
+                    "mean": 103.4,
+                    "median": 90.0,
+                    "stdev": 69.99,
+                    "count": 759
+                },
+                "32GB": {
+                    "mean": 532.4,
+                    "median": 450.0,
+                    "stdev": 430.92,
+                    "count": 175
+                },
+                "12GB": {
+                    "mean": 226.81,
+                    "median": 199.0,
+                    "stdev": 195.37,
+                    "count": 181
+                },
+                "6GB": {
+                    "mean": 125.1,
+                    "median": 86.5,
+                    "stdev": 143.62,
+                    "count": 100
+                },
+                "20GB": {
+                    "mean": 255.4,
+                    "median": 250.0,
+                    "stdev": 119.33,
+                    "count": 20
+                },
+                "24GB": {
+                    "mean": 389.79,
+                    "median": 342.5,
+                    "stdev": 171.22,
+                    "count": 24
+                }
+            },
+            "gpu": {}
+        }
+    },
+    "SURFACE": {
+        "mean": 407.02,
+        "median": 300.0,
+        "stdev": 340.88,
+        "sample_size": 375,
+        "specs_breakdown": {
+            "cpu": {
+                "INTEL I5": {
+                    "mean": 305.97,
+                    "median": 227.5,
+                    "stdev": 217.96,
+                    "count": 90
+                },
+                "INTEL I7": {
+                    "mean": 519.5,
+                    "median": 449.95,
+                    "stdev": 354.49,
+                    "count": 38
+                },
+                "INTEL I3": {
+                    "mean": 362.5,
+                    "median": 355.0,
+                    "stdev": 90.32,
+                    "count": 4
+                },
+                "AMD RYZEN 5": {
+                    "mean": 444.8,
+                    "median": 499.0,
+                    "stdev": 130.28,
+                    "count": 5
+                }
+            },
+            "ram": {
+                "8GB": {
+                    "mean": 330.81,
+                    "median": 275.0,
+                    "stdev": 200.16,
+                    "count": 121
+                },
+                "16GB": {
+                    "mean": 761.08,
+                    "median": 699.5,
+                    "stdev": 378.8,
+                    "count": 70
+                },
+                "32GB": {
+                    "mean": 1433.0,
+                    "median": 1700.0,
+                    "stdev": 462.46,
+                    "count": 3
+                },
+                "4GB": {
+                    "mean": 133.82,
+                    "median": 120.0,
+                    "stdev": 85.14,
+                    "count": 22
+                },
+                "64GB": {
+                    "mean": 357.67,
+                    "median": 150.0,
+                    "stdev": 621.65,
+                    "count": 9
+                }
+            },
+            "gpu": {}
+        }
+    },
+    "PREMIUM_ULTRABOOK": {
+        "mean": 380.42,
+        "median": 300.0,
+        "stdev": 300.46,
+        "sample_size": 1175,
+        "specs_breakdown": {
+            "cpu": {
+                "INTEL I7": {
+                    "mean": 481.13,
+                    "median": 450.0,
+                    "stdev": 269.79,
+                    "count": 168
+                },
+                "INTEL I5": {
+                    "mean": 299.54,
+                    "median": 270.0,
+                    "stdev": 187.69,
+                    "count": 158
+                },
+                "AMD RYZEN 5": {
+                    "mean": 308.06,
+                    "median": 290.0,
+                    "stdev": 133.47,
+                    "count": 48
+                },
+                "AMD RYZEN 7": {
+                    "mean": 501.59,
+                    "median": 490.0,
+                    "stdev": 171.43,
+                    "count": 37
+                },
+                "INTEL I3": {
+                    "mean": 230.33,
+                    "median": 170.0,
+                    "stdev": 139.93,
+                    "count": 79
+                },
+                "AMD RYZEN 3": {
+                    "mean": 203.0,
+                    "median": 180.0,
+                    "stdev": 71.55,
+                    "count": 5
+                },
+                "INTEL I9": {
+                    "mean": 985.0,
+                    "median": 575.0,
+                    "stdev": 976.82,
+                    "count": 3
+                }
+            },
+            "ram": {
+                "8GB": {
+                    "mean": 253.12,
+                    "median": 210.0,
+                    "stdev": 142.54,
+                    "count": 307
+                },
+                "32GB": {
+                    "mean": 799.25,
+                    "median": 850.0,
+                    "stdev": 430.28,
+                    "count": 55
+                },
+                "16GB": {
+                    "mean": 551.37,
+                    "median": 500.0,
+                    "stdev": 257.11,
+                    "count": 271
+                },
+                "4GB": {
+                    "mean": 121.44,
+                    "median": 100.0,
+                    "stdev": 56.78,
+                    "count": 62
+                },
+                "64GB": {
+                    "mean": 140.0,
+                    "median": 122.5,
+                    "stdev": 82.5,
+                    "count": 10
+                },
+                "12GB": {
+                    "mean": 197.61,
+                    "median": 160.0,
+                    "stdev": 104.79,
+                    "count": 18
+                },
+                "6GB": {
+                    "mean": 121.54,
+                    "median": 110.0,
+                    "stdev": 37.16,
+                    "count": 13
+                }
+            },
+            "gpu": {}
+        }
+    },
+    "CHROMEBOOK": {
+        "mean": 145.66,
+        "median": 125.0,
+        "stdev": 86.64,
+        "sample_size": 690,
+        "specs_breakdown": {
+            "cpu": {
+                "AMD RYZEN 5": {
+                    "mean": 305.0,
+                    "median": 300.0,
+                    "stdev": 87.32,
+                    "count": 5
+                },
+                "AMD RYZEN 3": {
+                    "mean": 240.0,
+                    "median": 255.0,
+                    "stdev": 66.83,
+                    "count": 4
+                },
+                "INTEL I3": {
+                    "mean": 201.4,
+                    "median": 175.0,
+                    "stdev": 114.47,
+                    "count": 10
+                },
+                "INTEL I5": {
+                    "mean": 237.0,
+                    "median": 250.0,
+                    "stdev": 106.47,
+                    "count": 7
+                }
+            },
+            "ram": {
+                "8GB": {
+                    "mean": 197.32,
+                    "median": 200.0,
+                    "stdev": 83.63,
+                    "count": 58
+                },
+                "64GB": {
+                    "mean": 149.25,
+                    "median": 140.0,
+                    "stdev": 67.44,
+                    "count": 59
+                },
+                "16GB": {
+                    "mean": 284.4,
+                    "median": 295.0,
+                    "stdev": 127.28,
+                    "count": 10
+                },
+                "32GB": {
+                    "mean": 103.03,
+                    "median": 90.0,
+                    "stdev": 58.83,
+                    "count": 65
+                },
+                "4GB": {
+                    "mean": 124.47,
+                    "median": 120.0,
+                    "stdev": 76.72,
+                    "count": 34
+                },
+                "12GB": {
+                    "mean": 176.67,
+                    "median": 180.0,
+                    "stdev": 5.77,
+                    "count": 3
+                }
+            },
+            "gpu": {}
+        }
+    }
+}

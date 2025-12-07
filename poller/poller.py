@@ -1,18 +1,16 @@
 import json
 import time
 import random
+import requests
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
-
-# pip install curl-cffi
-from curl_cffi import requests
 
 # --- CONFIGURACIÓN ---
 # Usamos la categoría madre para dar contexto
 CATEGORY_ID = "24200" 
 TARGET_SUB_ID = "10310"  # El ID de portátiles (ahora como string para la URL)
 MAX_ITEMS_TO_FETCH = 10000 
-MAX_RETRIES = 3 # Número de intentos para peticiones de usuario
+MAX_RETRIES = 3 # Número de intentos para CUALQUIER petición
 
 # Umbral para decidir si investigamos al usuario (hacer peticiones extra)
 RISK_THRESHOLD_FOR_ENRICHMENT = 40 
@@ -25,8 +23,8 @@ SUSPICIOUS_KEYWORDS = [
 
 def make_request(url: str, params: dict = None) -> requests.Response:
     """
-    Realiza peticiones HTTP imitando a Chrome 110.
-    Soporta params opcionales para endpoints que no son de búsqueda.
+    Realiza peticiones HTTP con lógica de REINTENTOS INCREMENTALES.
+    Si la red falla, aumenta el tiempo de espera entre intentos (2s, 4s, 6s...).
     """
     
     headers = {
@@ -40,74 +38,79 @@ def make_request(url: str, params: dict = None) -> requests.Response:
         "X-Requested-With": "XMLHttpRequest"
     }
 
-    # print(f"    [DEBUG] Petición a {url}...")
-    
-    return requests.get(
-        url, 
-        params=params, 
-        headers=headers, 
-        impersonate="chrome110", 
-        timeout=20
-    )
+    last_exception = None
+
+    for attempt in range(MAX_RETRIES):
+        try:
+            # Si es un reintento (attempt > 0), aplicamos Backoff Incremental
+            if attempt > 0:
+                wait_time = attempt * 2  # Intento 1 -> 2s, Intento 2 -> 4s
+                print(f"    [Retry] Problema de red. Reintentando ({attempt+1}/{MAX_RETRIES}) tras {wait_time}s...")
+                time.sleep(wait_time)
+
+            response = requests.get(
+                url, 
+                params=params, 
+                headers=headers, 
+                timeout=20
+            )
+            # Si llegamos aquí, hubo conexión exitosa
+            return response
+            
+        except requests.exceptions.RequestException as e:
+            last_exception = e
+            # Continuamos al siguiente intento del bucle
+            continue
+
+    # Si salimos del bucle es que fallaron todos los intentos
+    print(f"    [!] Fallo definitivo tras {MAX_RETRIES} intentos: {last_exception}")
+    raise last_exception
 
 def get_user_details(user_id: str) -> Dict[str, Any]:
     """
-    Consulta el endpoint de usuario para obtener fecha de registro y reportes.
-    Ref: pkg/models/profile.go
-    Incluye lógica de reintentos.
+    Consulta el endpoint de usuario.
+    Delega los reintentos de conexión a make_request.
     """
     url = f"https://api.wallapop.com/api/v3/users/{user_id}"
     
-    for attempt in range(MAX_RETRIES):
-        try:
-            # Pausa pequeña para no saturar al hacer peticiones secuenciales
-            time.sleep(random.uniform(1, 3)) 
-            response = make_request(url)
+    try:
+        # Pausa antidetect (rate limit) antes de pedir
+        time.sleep(random.uniform(1, 3)) 
+        
+        response = make_request(url)
+        
+        if response.status_code == 200:
+            return response.json()
+        elif response.status_code == 404:
+            return {}
             
-            if response.status_code == 200:
-                return response.json()
-            elif response.status_code == 404:
-                # Si el usuario no existe, no reintentamos
-                return {}
-            
-            # Si es otro error (500, timeout simulado por firewall, etc), seguimos al siguiente intento
-        except Exception as e:
-            if attempt < MAX_RETRIES - 1:
-                print(f"    [!] Error conexión usuario {user_id} (Intento {attempt+1}/{MAX_RETRIES}): {e}. Reintentando...")
-                time.sleep(2)
-            else:
-                print(f"    [!] Error fatal obteniendo detalles del usuario {user_id}: {e}")
+    except Exception as e:
+        print(f"    [!] Error no recuperable obteniendo detalles usuario {user_id}: {e}")
     
     return {}
 
 def get_user_reviews(user_id: str) -> List[Dict[str, Any]]:
     """
     Consulta las reviews del usuario.
-    Ref: pkg/api/endpoints.go
-    Incluye lógica de reintentos.
+    Delega los reintentos de conexión a make_request.
     """
     url = f"https://api.wallapop.com/api/v3/users/{user_id}/reviews"
     
-    for attempt in range(MAX_RETRIES):
-        try:
-            time.sleep(random.uniform(1, 3))
-            response = make_request(url)
+    try:
+        time.sleep(random.uniform(1, 3))
+        
+        response = make_request(url)
+        
+        if response.status_code == 200:
+            data = response.json()
+            if isinstance(data, list):
+                return data
+            return data.get("reviews", [])
+        elif response.status_code == 404:
+            return []
             
-            if response.status_code == 200:
-                # La API suele devolver una lista directa o un objeto con lista
-                data = response.json()
-                if isinstance(data, list):
-                    return data
-                return data.get("reviews", [])
-            elif response.status_code == 404:
-                return []
-                
-        except Exception as e:
-            if attempt < MAX_RETRIES - 1:
-                print(f"    [!] Error conexión reviews {user_id} (Intento {attempt+1}/{MAX_RETRIES}): {e}. Reintentando...")
-                time.sleep(2)
-            else:
-                print(f"    [!] Error fatal obteniendo reviews del usuario {user_id}: {e}")
+    except Exception as e:
+        print(f"    [!] Error no recuperable obteniendo reviews usuario {user_id}: {e}")
     
     return []
 
@@ -125,7 +128,6 @@ def is_real_laptop(item: Dict[str, Any]) -> bool:
 def calculate_initial_risk(item: Dict[str, Any]) -> int:
     """
     Cálculo rápido de riesgo basado SOLO en el ítem (sin llamar a APIs externas).
-    Se usa para decidir si vale la pena investigar más a fondo.
     """
     score = 0
     
@@ -146,18 +148,17 @@ def calculate_initial_risk(item: Dict[str, Any]) -> int:
     for kw in SUSPICIOUS_KEYWORDS:
         if kw in title or kw in description:
             score += 20
-            break # Solo sumamos una vez por keywords para no inflar demasiado
+            break 
             
     # 3. Descripción corta
     if len(description) < 20:
         score += 10
 
-    # 4. Flags del Ítem (La mejora que viste en el repo Go)
-    # Si Wallapop ya lo ha marcado como baneado u onhold, es muy sospechoso.
+    # 4. Flags del Ítem
     flags = item.get("flags", {})
     if flags.get("banned", False):
-        score += 100 # Riesgo máximo inmediato
-    if flags.get("onhold", False): # A veces "onhold" es revisión de seguridad
+        score += 100 
+    if flags.get("onhold", False): 
         score += 20
         
     return score
@@ -165,12 +166,10 @@ def calculate_initial_risk(item: Dict[str, Any]) -> int:
 def enrich_and_finalize_risk(item: Dict[str, Any], initial_score: int) -> Dict[str, Any]:
     """
     Realiza la investigación profunda (Deep Dive) si el riesgo inicial es alto.
-    Llama a endpoints de usuario y recalcula el score final.
     """
     factors = []
     final_score = initial_score
     
-    # Recuperamos flags para documentarlos
     flags = item.get("flags", {})
     if flags.get("banned"):
         factors.append("Item BANNED by Wallapop")
@@ -191,14 +190,13 @@ def enrich_and_finalize_risk(item: Dict[str, Any], initial_score: int) -> Dict[s
     if user_id:
         print(f"    [Inspect] Investigando usuario {user_id} para ítem sospechoso...")
         
-        # 1. Datos del Perfil
+        # 1. Datos del Perfil (Usa make_request con reintentos implícitos)
         user_profile = get_user_details(user_id)
         
         # Fecha de registro
-        register_date_ts = user_profile.get("register_date") # Suele ser timestamp millis
+        register_date_ts = user_profile.get("register_date") 
         if register_date_ts:
             try:
-                # Convertir timestamp (ms) a datetime
                 reg_date = datetime.fromtimestamp(register_date_ts / 1000)
                 days_since_reg = (datetime.now() - reg_date).days
                 
@@ -211,25 +209,20 @@ def enrich_and_finalize_risk(item: Dict[str, Any], initial_score: int) -> Dict[s
             except:
                 pass
         
-        # Reportes de estafa (si el campo existe y es visible)
         scam_reports = user_profile.get("scam_reports", 0)
         if scam_reports > 0:
             final_score += 50
             factors.append(f"User has {scam_reports} scam reports")
 
-        # Verificación
         if not user_profile.get("verification_level", 0):
              final_score += 5
-             # No es determinante, pero suma.
 
-        # 2. Reviews del Usuario
+        # 2. Reviews del Usuario (Usa make_request con reintentos implícitos)
         reviews = get_user_reviews(user_id)
         if len(reviews) == 0:
-            # Vendedor sin reviews vendiendo algo "raro" o barato
             final_score += 15
             factors.append("No reviews")
         else:
-            # Calcular media de estrellas
             total_stars = sum([r.get("scoring", 0) for r in reviews])
             avg_stars = total_stars / len(reviews)
             if avg_stars < 3:
@@ -269,14 +262,10 @@ def enrich_and_finalize_risk(item: Dict[str, Any], initial_score: int) -> Dict[s
 def fetch_items_with_pagination() -> List[Dict[str, Any]]:
     url = "https://api.wallapop.com/api/v3/search"
     
-    # ESTRATEGIA DE FILTRADO v7: REPLICACIÓN EXACTA DEL NAVEGADOR
-    # Usamos exactamente los parámetros que has encontrado en la URL del navegador.
-    # subcategory_ids (10310) + source (side_bar_filters)
     params = {
         "category_id": CATEGORY_ID,        # 24200
-        "subcategory_ids": TARGET_SUB_ID,  # 10310 (El parámetro clave que nos faltaba)
-        "source": "side_bar_filters",      # Indica que venimos del filtro lateral
-        
+        "subcategory_ids": TARGET_SUB_ID,  # 10310 
+        "source": "side_bar_filters",      
         "time_filter": "today",           
         "country_code": "ES",             
         "order_by": "newest",
@@ -300,6 +289,8 @@ def fetch_items_with_pagination() -> List[Dict[str, Any]]:
                 sleep_time = random.uniform(5, 12)
                 time.sleep(sleep_time)
 
+                # make_request ahora gestiona reintentos internos (transitorios)
+                # Si falla 3 veces por red, lanzará excepción y caeremos en el except de abajo
                 response = make_request(url, params)
 
                 if response.status_code == 403:
@@ -328,13 +319,19 @@ def fetch_items_with_pagination() -> List[Dict[str, Any]]:
                 discarded_count = 0
                 
                 for item in current_items:
-                    # Mantenemos el filtro local como seguridad, pero ahora la API
-                    # debería enviarnos solo portátiles.
                     if is_real_laptop(item):
                         initial_risk = calculate_initial_risk(item)
                         enrichment_data = enrich_and_finalize_risk(item, initial_risk)
                         
                         item["enrichment"] = enrichment_data
+
+                        # CORRECCIÓN GEO
+                        loc = item.get("location", {})
+                        if "latitude" in loc and "longitude" in loc:
+                            loc["geo"] = {
+                                "lat": loc["latitude"],
+                                "lon": loc["longitude"]
+                            }
                         
                         if enrichment_data["risk_score"] >= 50:
                             print(f"        [!] FRAUDE POTENCIAL: {item.get('title')[:30]}... (Score: {enrichment_data['risk_score']})")
@@ -343,7 +340,6 @@ def fetch_items_with_pagination() -> List[Dict[str, Any]]:
                     else:
                         discarded_count += 1
                         if discarded_count == 1:
-                           # Debug para verificar si se cuela algo raro
                            print(f"        [DEBUG] Descartado: {item.get('title')[:30]}")
 
                 all_items.extend(items_of_interest)
@@ -356,6 +352,8 @@ def fetch_items_with_pagination() -> List[Dict[str, Any]]:
                 page_count += 1
 
             except Exception as e:
+                # Este bloque captura fallos DEFINITIVOS (tras los 3 reintentos de make_request)
+                # o errores de parsing JSON. Esperamos 60s y probamos la página de nuevo.
                 print(f"[!] Excepción en paginación: {e}")
                 time.sleep(60) 
                 continue
