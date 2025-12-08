@@ -3,10 +3,9 @@ import time
 import random
 import requests
 import os
-import statistics
 import re
 from datetime import datetime, timedelta
-from typing import List, Dict, Any, Tuple
+from typing import Dict, Any, Tuple
 
 # IMPORTANTE: Importamos tus funciones de análisis para usarlas en tiempo real
 # Asegúrate de que regex_analyzer.py esté en la misma carpeta
@@ -19,7 +18,7 @@ except ImportError:
 # --- CONFIGURACIÓN ---
 CATEGORY_ID = "24200"
 TARGET_SUB_ID = "10310"
-MAX_ITEMS_TO_FETCH = 10000
+MAX_ITEMS_TO_FETCH = 20000 
 STATS_FILE = "market_stats.json"
 
 # Pesos de importancia para la valoración (Juicio de Experto)
@@ -30,7 +29,7 @@ WEIGHTS = {
     "category": 0.1  # La categoría base da el suelo del precio
 }
 
-# Límites lógicos de RAM para evitar falsos positivos (ej. 64GB SSD detectado como RAM)
+# Límites lógicos de RAM para evitar falsos positivos
 RAM_LIMITS = {
     "CHROMEBOOK": 16,
     "SURFACE": 32,
@@ -62,15 +61,35 @@ def make_request(url: str, params: dict = None) -> requests.Response:
     }
     for attempt in range(3):
         try:
-            if attempt > 0: time.sleep(attempt * 2)
-            response = requests.get(url, params=params, headers=headers, timeout=10)
+            # Backoff exponencial suave
+            if attempt > 0: 
+                sleep_time = (attempt * 2) + random.uniform(0, 1)
+                time.sleep(sleep_time)
+            
+            response = requests.get(url, params=params, headers=headers, timeout=15)
+            
+            if response.status_code == 429: # Rate Limit
+                time.sleep(10)
+                continue
+                
             return response
         except requests.RequestException:
             continue
     return None
 
+def get_user_details(user_id: str) -> Dict[str, Any]:
+    """Consulta el endpoint de usuario para obtener antigüedad y reportes."""
+    url = f"https://api.wallapop.com/api/v3/users/{user_id}"
+    # Pequeña pausa para no saturar al pedir detalles
+    time.sleep(random.uniform(0.5, 1.5))
+    
+    response = make_request(url)
+    if response and response.status_code == 200:
+        return response.json()
+    return {}
+
+# --- FUNCIONES DE ANÁLISIS ---
 def get_stats_for_component(category_node, component_type, component_name):
-    """Busca las estadísticas de un componente específico si existen."""
     if not component_name: return None
     try:
         return category_node["components"][component_type].get(component_name)
@@ -78,95 +97,54 @@ def get_stats_for_component(category_node, component_type, component_name):
         return None
 
 def smart_truncate_spam(text: str) -> str:
-    """
-    Corta el texto si detecta un bloque de etiquetas spam típico de Wallapop.
-    Ej: "GTX RTX 3060 4060 ps5 iphone..."
-    """
     lines = text.split('\n')
     clean_lines = []
-    
-    # Lista de palabras que, si aparecen muchas juntas, indican bloque de spam
     spam_indicators = ["rtx", "gtx", "amd", "intel", "ryzen", "i7", "i5", "ps5", "xbox", "iphone", "samsung", "asus", "msi"]
     
     for line in lines:
-        # Si una línea tiene más de 3 indicadores de spam distintos, cortamos aquí.
         hits = 0
         line_lower = line.lower()
         for ind in spam_indicators:
-            if ind in line_lower:
-                hits += 1
-        
-        if hits > 3:
-            # Hemos encontrado el vertedero de keywords. Paramos de leer.
-            break
-            
+            if ind in line_lower: hits += 1
+        if hits > 3: break
         clean_lines.append(line)
-        
     return "\n".join(clean_lines)
 
 def sanitize_hardware_ambiguities(text: str) -> str:
-    """
-    Corrige ambigüedades comunes donde componentes de almacenamiento
-    se confunden con procesadores (ej: 'SSD M2' vs 'Apple M2').
-    """
-    # 1. Proteger "SSD M2" / "Disco M2" -> Reemplazar por "SSD_NVME"
-    # Esto elimina el token "M2" aislado que confunde al regex de CPU
     text = re.sub(r"(?i)\b(ssd|disco|disk|drive|almacenamiento)\s+m\.?2\b", r"\1_NVME", text)
-    
-    # 2. Proteger "M2 NVMe" / "M2 SATA" -> Reemplazar por "NVME_DRIVE"
     text = re.sub(r"(?i)\bm\.?2\s+(ssd|nvme|sata)\b", r"NVME_\1", text)
-    
     return text
 
 def apply_category_constraints(specs: Dict, category: str, full_text_original: str) -> Dict:
-    """
-    Aplica reglas de negocio para corregir detecciones erróneas.
-    Ej: Un Chromebook no puede tener 64GB de RAM (probablemente era el disco duro).
-    """
-    # 1. Corrección de RAM
     limit_ram = RAM_LIMITS.get(category, 128)
-    
     current_ram_gb = 0
     if specs.get("ram"):
         try:
             current_ram_gb = int(re.sub(r"[^0-9]", "", specs["ram"]))
         except: pass
         
-    # Si la RAM detectada supera el límite lógico de la categoría, re-escaneamos
-    # usando el parámetro max_gb de regex_analyzer para buscar un número menor válido.
     if current_ram_gb > limit_ram:
         corrected_ram = regex_analyzer.extract_ram(full_text_original.lower(), max_gb=limit_ram)
         if corrected_ram:
             specs["ram"] = corrected_ram
         else:
-            # Si no encontramos otra RAM válida, borramos la incorrecta para no distorsionar
             specs["ram"] = None
 
-    # 2. Corrección de CPU en Chromebooks/Netbooks
-    # Si es Chromebook y detectamos "i7" pero también hay "Celeron" en el texto, priorizamos Celeron.
     if category == "CHROMEBOOK" and specs.get("cpu") and "I7" in specs["cpu"]:
         if "celeron" in full_text_original.lower():
             specs["cpu"] = "INTEL CELERON"
         elif "pentium" in full_text_original.lower():
              specs["cpu"] = "INTEL PENTIUM"
-             
     return specs
 
 def get_prioritized_specs_and_category(title: str, description: str) -> Tuple[Dict, str]:
-    """
-    Orquesta la extracción, limpieza de spam y validación de reglas.
-    """
-    # FASE 0: Sanitización de Ambigüedades (SSD M2 != Apple M2)
     title_clean = sanitize_hardware_ambiguities(title)
     desc_clean_spam = smart_truncate_spam(description)
     desc_clean = sanitize_hardware_ambiguities(desc_clean_spam)
     
     title_lower = title_clean.lower()
-    
-    # Truncado adicional por seguridad
     desc_truncated = desc_clean[:400] 
     
-    # 2. Extracción (Usando texto limpio)
     specs_title = regex_analyzer.extract_specs_regex(title_clean)
     specs_desc = regex_analyzer.extract_specs_regex(desc_truncated)
     
@@ -176,7 +154,6 @@ def get_prioritized_specs_and_category(title: str, description: str) -> Tuple[Di
         "gpu": specs_title.get("gpu") if specs_title.get("gpu") else specs_desc.get("gpu"),
     }
     
-    # 3. Determinación de Categoría (Locking)
     category = "GENERICO"
     if "chromebook" in title_lower:
         category = "CHROMEBOOK"
@@ -189,17 +166,13 @@ def get_prioritized_specs_and_category(title: str, description: str) -> Tuple[Di
         full_text_clean = f"{title_clean}. {desc_truncated}"
         category = regex_analyzer.classify_prime_category(full_text_clean.lower(), final_specs)
     
-    # 4. APLICACIÓN DE REGLAS DE NEGOCIO
     full_text_for_correction = f"{title_clean} {desc_truncated}"
     final_specs = apply_category_constraints(final_specs, category, full_text_for_correction)
         
     return final_specs, category
 
-# --- LÓGICA DE DETECCIÓN PROFESIONAL (PONDERADA) ---
+# --- LÓGICA DE RIESGO AVANZADO ---
 def calculate_advanced_risk(item: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Calcula el riesgo utilizando un ENSEMBLE PONDERADO de Z-Scores.
-    """
     score = 0
     factors = []
     
@@ -207,109 +180,91 @@ def calculate_advanced_risk(item: Dict[str, Any]) -> Dict[str, Any]:
     desc = item.get("description", "")
     price = regex_analyzer.clean_price(item)
     
-    # Pipeline mejorado: Extracción -> Limpieza -> Categorización -> Constraints
     specs, category = get_prioritized_specs_and_category(title, desc)
-    
     stats_node = MARKET_STATS.get(category, {})
     
-    # 2. Recopilación de señales estadísticas (Ensemble)
     signals = [] 
     
-    # A) Señal de CPU
-    cpu_stats = get_stats_for_component(stats_node, "cpu", specs.get("cpu"))
-    if cpu_stats and cpu_stats["stdev"] > 0:
-        z_cpu = (price - cpu_stats["mean"]) / cpu_stats["stdev"]
-        signals.append({
-            "z": z_cpu, 
-            "weight": WEIGHTS["cpu"], 
-            "ref_price": cpu_stats["mean"],
-            "source": f"CPU:{specs['cpu']}"
-        })
+    # Análisis Estadístico (Z-Score)
+    for comp in ["cpu", "gpu", "ram"]:
+        comp_val = specs.get(comp)
+        comp_stats = get_stats_for_component(stats_node, comp, comp_val)
+        if comp_stats and comp_stats["stdev"] > 0:
+            z = (price - comp_stats["mean"]) / comp_stats["stdev"]
+            signals.append({
+                "z": z, "weight": WEIGHTS[comp], 
+                "ref_price": comp_stats["mean"], "source": f"{comp.upper()}:{comp_val}"
+            })
 
-    # B) Señal de GPU
-    gpu_stats = get_stats_for_component(stats_node, "gpu", specs.get("gpu"))
-    if gpu_stats and gpu_stats["stdev"] > 0:
-        z_gpu = (price - gpu_stats["mean"]) / gpu_stats["stdev"]
-        signals.append({
-            "z": z_gpu, 
-            "weight": WEIGHTS["gpu"], 
-            "ref_price": gpu_stats["mean"],
-            "source": f"GPU:{specs['gpu']}"
-        })
-        
-    # C) Señal de RAM
-    ram_stats = get_stats_for_component(stats_node, "ram", specs.get("ram"))
-    if ram_stats and ram_stats["stdev"] > 0:
-        z_ram = (price - ram_stats["mean"]) / ram_stats["stdev"]
-        signals.append({
-            "z": z_ram, 
-            "weight": WEIGHTS["ram"], 
-            "ref_price": ram_stats["mean"],
-            "source": f"RAM:{specs['ram']}"
-        })
-
-    # D) Señal de Categoría Base 
     if stats_node.get("stdev", 0) > 0:
         z_cat = (price - stats_node["mean"]) / stats_node["stdev"]
         signals.append({
-            "z": z_cat, 
-            "weight": WEIGHTS["category"], 
-            "ref_price": stats_node["mean"],
-            "source": f"CAT:{category}"
+            "z": z_cat, "weight": WEIGHTS["category"], 
+            "ref_price": stats_node["mean"], "source": f"CAT:{category}"
         })
 
-    # 3. Cálculo del Z-Score Ponderado
     final_z_score = 0
     total_weight = 0
     estimated_market_value = 0
     
     if signals:
-        weighted_z_sum = 0
-        weighted_price_sum = 0
+        weighted_z_sum = sum(s["z"] * s["weight"] for s in signals)
+        weighted_price_sum = sum(s["ref_price"] * s["weight"] for s in signals)
+        total_weight = sum(s["weight"] for s in signals)
         
-        for s in signals:
-            weighted_z_sum += s["z"] * s["weight"]
-            weighted_price_sum += s["ref_price"] * s["weight"]
-            total_weight += s["weight"]
-            
         if total_weight > 0:
             final_z_score = weighted_z_sum / total_weight
             estimated_market_value = weighted_price_sum / total_weight
     
-    # 4. Interpretación del Riesgo Compuesto
-    
+    # Factores de Precio
     if final_z_score < -1.5:
         score += 30
         factors.append(f"Statistically Cheap (Combined Z={final_z_score:.2f})")
-        
-    if final_z_score < -2.5: # Anomalía muy fuerte
+    if final_z_score < -2.5:
         score += 40 
         factors.append(f"EXTREME Price Anomaly (Target ~{int(estimated_market_value)}€)")
 
-    # Fallback: Ratio simple
     if estimated_market_value > 0 and price > 0:
         ratio = price / estimated_market_value
         if ratio < 0.4:
             score += 20
             factors.append(f"Price is <40% of est. value ({int(ratio*100)}%)")
 
-    # 5. Heurísticas Clásicas (Keywords)
+    # Factores Heurísticos
+    contact_pattern = re.compile(r"(whatsapp|watsap|wasap|tlf|telefono|6\d{2}[\s\.]?\d{3}[\s\.]?\d{3}|gmail|hotmail)", re.IGNORECASE)
+    if contact_pattern.search(desc + " " + title):
+        score += 30
+        factors.append("External Contact Request (WhatsApp/Phone)")
+
+    if len(desc) < 30 and price > 200:
+        score += 15
+        factors.append("Very Short Description (<30 chars)")
+
+    images = item.get("images", [])
+    if len(images) <= 1 and price > 300:
+        score += 15
+        factors.append("Low Image Count (0-1 photos)")
+    
+    payment_scam_words = [
+        "bizum", "transferencia", "ingreso", 
+        "paypal", "pay pal", "pai pal", "pay-pal",
+        "envio incluido", "pago por adelantado", "solo envio",
+        "halcash", "correos prepago", "western union", "moneygram"
+    ]
+    found_payment = [kw for kw in payment_scam_words if kw in (title + " " + desc).lower()]
+    if found_payment:
+        score += 30
+        factors.append(f"Risky Payment Method: {found_payment}")
+
     suspicious_keywords = ["urgente", "roto", "bloqueado", "bios", "icloud", "pieza", "tarada"]
     found_kws = [kw for kw in suspicious_keywords if kw in (title + " " + desc).lower()]
-    
     if found_kws:
         score += 20
         factors.append(f"Suspicious keywords: {found_kws}")
     
-    # 6. Usuario Nuevo
-    user = item.get("user", {})
-    if user.get("register_date"):
-        try:
-            reg_date = datetime.fromtimestamp(user["register_date"] / 1000)
-            if (datetime.now() - reg_date).days < 2:
-                score += 30
-                factors.append("User registered < 48h ago")
-        except: pass
+    if title.isupper() and len(title) > 10:
+        score += 10
+        factors.append("Aggressive Title (ALL CAPS)")
 
     return {
         "risk_score": min(score, 100),
@@ -331,12 +286,12 @@ def run_smart_poller():
         "subcategory_ids": TARGET_SUB_ID,
         "source": "side_bar_filters",
         "order_by": "newest",
-        "time_filter": "today", 
+        "time_filter": "today",
         "latitude": "40.4168",
         "longitude": "-3.7038",
     }
     
-    print("--- INICIANDO SMART POLLER (Modelo Estadístico Ponderado + Anti-Spam) ---")
+    print("--- INICIANDO SMART POLLER (Intelligent Enrichment + Triggers) ---")
     print(f"[*] Objetivo: Recolectar hasta {MAX_ITEMS_TO_FETCH} ítems.")
     
     all_items = []
@@ -351,7 +306,6 @@ def run_smart_poller():
             time.sleep(random.uniform(1, 2)) 
 
             response = make_request(url, params)
-            
             if not response or response.status_code != 200:
                 print(f"[!] Error API/Red. Deteniendo.")
                 break
@@ -374,69 +328,106 @@ def run_smart_poller():
             items_added = 0
             for item in items:
                 if regex_analyzer.clean_price(item) < 20: continue 
-                
                 item.pop("images", None)
 
+                # 1. Análisis preliminar (Solo con datos del anuncio)
                 risk_data = calculate_advanced_risk(item)
+                market_analysis = risk_data.get("market_analysis", {})
+                
+                # --- SISTEMA DE TRIGGERS (Decisión de Enriquecimiento) ---
+                should_enrich = False
+                enrichment_reason = ""
+
+                # Trigger A: Z-Score Anomaly (Precio Estadísticamente Bajo)
+                z_score = market_analysis.get("composite_z_score", 0)
+                if z_score < -1.5:
+                    should_enrich = True
+                    enrichment_reason = f"Z-Score ({z_score:.2f})"
+
+                # Trigger B: Risky Keywords (Pago Externo/Estafa)
+                factors_str = str(risk_data["risk_factors"])
+                if "Risky Payment" in factors_str or "External Contact" in factors_str:
+                    should_enrich = True
+                    enrichment_reason = "Risky Keywords"
+
+                # Trigger C: Quality Gap (Gama Alta + Descripción Pobre)
+                desc_len = len(item.get("description", ""))
+                high_end = ["APPLE", "GAMING", "PREMIUM_ULTRABOOK"]
+                if market_analysis.get("detected_category") in high_end and desc_len < 50:
+                    should_enrich = True
+                    enrichment_reason = "High Value/Low Quality"
+
+                # --- EJECUCIÓN DE ENRIQUECIMIENTO ---
+                if should_enrich:
+                    user_id = item.get("user", {}).get("id") or item.get("user_id")
+                    if user_id:
+                        # print(f"        [🔍] Investigando usuario {user_id} ({enrichment_reason})...")
+                        user_details = get_user_details(user_id)
+                        
+                        # Penalizaciones por perfil
+                        reg_date_ts = user_details.get("register_date")
+                        if reg_date_ts:
+                            days_active = (datetime.now() - datetime.fromtimestamp(reg_date_ts/1000)).days
+                            if days_active < 3:
+                                risk_data["risk_score"] += 30
+                                risk_data["risk_factors"].append("New User (<3 days)")
+                        
+                        if user_details.get("scam_reports", 0) > 0:
+                            risk_data["risk_score"] += 50
+                            risk_data["risk_factors"].append("User has Scam Reports")
+                            
+                        # Limitar a 100 tras sumar
+                        risk_data["risk_score"] = min(100, risk_data["risk_score"])
+
                 item["enrichment"] = risk_data
 
+                # --- CORRECCIÓN GEO ---
                 loc = item.get("location", {})
                 if "latitude" in loc and "longitude" in loc:
-                    loc["geo"] = {
-                        "lat": loc["latitude"],
-                        "lon": loc["longitude"]
-                    }
+                    loc["geo"] = {"lat": loc["latitude"], "lon": loc["longitude"]}
 
-                # Extraemos fechas (Wallapop devuelve milisegundos)
+                # --- FECHAS HÍBRIDAS (Para Historial) ---
                 ts_created = item.get("created_at") or item.get("creation_date")
                 ts_modified = item.get("modified_at") or item.get("modification_date")
-
+                
                 created_iso = None
                 modified_iso = None
                 is_fresh = False
+                
+                # Umbral: 1 día
+                threshold = datetime.now() - timedelta(hours = 24)
 
-                # Umbral de "frescura" (24 horas)
-                threshold = datetime.now() - timedelta(hours=24)
-
-                # 1. Analizamos fecha de creación
                 if ts_created:
                     try:
-                        dt_created = datetime.fromtimestamp(ts_created / 1000)
-                        created_iso = dt_created.isoformat()
-                        if dt_created > threshold:
-                            is_fresh = True
+                        dt_c = datetime.fromtimestamp(ts_created / 1000)
+                        created_iso = dt_c.isoformat()
+                        if dt_c > threshold: is_fresh = True
                     except: pass
 
-                # 2. Analizamos fecha de modificación
                 if ts_modified:
                     try:
-                        dt_modified = datetime.fromtimestamp(ts_modified / 1000)
-                        modified_iso = dt_modified.isoformat()
-                        if dt_modified > threshold:
-                            is_fresh = True
+                        dt_m = datetime.fromtimestamp(ts_modified / 1000)
+                        modified_iso = dt_m.isoformat()
+                        if dt_m > threshold: is_fresh = True
                     except: pass
 
-                # 3. Guardamos en el objeto para Elastic
                 item["timestamps"] = {
                     "crawl_timestamp": datetime.now().isoformat(),
                     "created_at": created_iso,
                     "modified_at": modified_iso
                 }
 
-                # 4. FILTRO FINAL: Si ni se creó ni se modificó hoy -> DESCARTAR
-                if not is_fresh:
-                    continue
+                if not is_fresh: continue
                 
                 all_items.append(item)
                 items_added += 1
                 
+                # Log de alertas graves
                 if risk_data["risk_score"] >= 50:
                     print(f"        [ALERTA] Fraude (Score: {risk_data['risk_score']})")
                     print(f"                 Título: {item.get('title')[:60]}...")
                     mkt = risk_data['market_analysis']
-                    price_val = item.get('price', {}).get('amount')
-                    print(f"                 Precio: {price_val}€ vs Est: {mkt['estimated_market_value']}€ (Z={mkt['composite_z_score']})")
-                    print(f"                 Motivos: {risk_data['risk_factors']}")
+                    print(f"                 Est: {mkt['estimated_market_value']}€ (Z={mkt['composite_z_score']}) | {enrichment_reason}")
             
             print(f"    -> Agregados {items_added}. Total: {len(all_items)}")
 
