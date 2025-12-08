@@ -2,386 +2,459 @@ import json
 import time
 import random
 import requests
+import os
+import statistics
+import re
 from datetime import datetime, timedelta
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Tuple
+
+# IMPORTANTE: Importamos tus funciones de análisis para usarlas en tiempo real
+# Asegúrate de que regex_analyzer.py esté en la misma carpeta
+try:
+    import regex_analyzer
+except ImportError:
+    print("[!] Error: No se encuentra 'regex_analyzer.py'. Asegúrate de que está en la misma carpeta.")
+    exit(1)
 
 # --- CONFIGURACIÓN ---
-# Usamos la categoría madre para dar contexto
-CATEGORY_ID = "24200" 
-TARGET_SUB_ID = "10310"  # El ID de portátiles (ahora como string para la URL)
-MAX_ITEMS_TO_FETCH = 10000 
-MAX_RETRIES = 3 # Número de intentos para CUALQUIER petición
+CATEGORY_ID = "24200"
+TARGET_SUB_ID = "10310"
+MAX_ITEMS_TO_FETCH = 10000
+STATS_FILE = "market_stats.json"
 
-# Umbral para decidir si investigamos al usuario (hacer peticiones extra)
-RISK_THRESHOLD_FOR_ENRICHMENT = 40 
+# Pesos de importancia para la valoración (Juicio de Experto)
+WEIGHTS = {
+    "cpu": 0.5,      # La CPU define la mitad del valor
+    "gpu": 0.3,      # La gráfica es crítica en gaming
+    "ram": 0.1,      # La RAM ajusta el precio marginalmente
+    "category": 0.1  # La categoría base da el suelo del precio
+}
 
-SUSPICIOUS_KEYWORDS = [
-    "urgente", "rotos", "para piezas", "bloqueado", "bios", 
-    "sin cargador", "icloud", "reparar", "tarada", "solo hoy", 
-    "sin factura", "indivisible", "no funciona", "leer bien"
-]
+# Límites lógicos de RAM para evitar falsos positivos (ej. 64GB SSD detectado como RAM)
+RAM_LIMITS = {
+    "CHROMEBOOK": 16,
+    "SURFACE": 32,
+    "PREMIUM_ULTRABOOK": 64,
+    "GENERICO": 64
+}
 
+# --- CARGA DE ESTADÍSTICAS ---
+def load_market_stats():
+    if not os.path.exists(STATS_FILE):
+        print(f"[!] ADVERTENCIA: No se encontró '{STATS_FILE}'. La detección estadística no funcionará.")
+        return {}
+    try:
+        with open(STATS_FILE, 'r', encoding='utf-8') as f:
+            print(f"[*] Estadísticas de mercado cargadas desde '{STATS_FILE}'.")
+            return json.load(f)
+    except Exception as e:
+        print(f"[!] Error leyendo stats: {e}")
+        return {}
+
+MARKET_STATS = load_market_stats()
+
+# --- LÓGICA DE RED ---
 def make_request(url: str, params: dict = None) -> requests.Response:
-    """
-    Realiza peticiones HTTP con lógica de REINTENTOS INCREMENTALES.
-    Si la red falla, aumenta el tiempo de espera entre intentos (2s, 4s, 6s...).
-    """
-    
     headers = {
         "Host": "api.wallapop.com",
-        "Accept": "application/json, text/plain, */*",
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36",
-        "Accept-Language": "es-ES,es;q=0.9",
-        "Origin": "https://es.wallapop.com",
-        "Referer": "https://es.wallapop.com/",
-        "X-DeviceOS": "0", 
-        "X-Requested-With": "XMLHttpRequest"
+        "X-DeviceOS": "0"
     }
-
-    last_exception = None
-
-    for attempt in range(MAX_RETRIES):
+    for attempt in range(3):
         try:
-            # Si es un reintento (attempt > 0), aplicamos Backoff Incremental
-            if attempt > 0:
-                wait_time = attempt * 2  # Intento 1 -> 2s, Intento 2 -> 4s
-                print(f"    [Retry] Problema de red. Reintentando ({attempt+1}/{MAX_RETRIES}) tras {wait_time}s...")
-                time.sleep(wait_time)
-
-            response = requests.get(
-                url, 
-                params=params, 
-                headers=headers, 
-                timeout=20
-            )
-            # Si llegamos aquí, hubo conexión exitosa
+            if attempt > 0: time.sleep(attempt * 2)
+            response = requests.get(url, params=params, headers=headers, timeout=10)
             return response
-            
-        except requests.exceptions.RequestException as e:
-            last_exception = e
-            # Continuamos al siguiente intento del bucle
+        except requests.RequestException:
             continue
+    return None
 
-    # Si salimos del bucle es que fallaron todos los intentos
-    print(f"    [!] Fallo definitivo tras {MAX_RETRIES} intentos: {last_exception}")
-    raise last_exception
-
-def get_user_details(user_id: str) -> Dict[str, Any]:
-    """
-    Consulta el endpoint de usuario.
-    Delega los reintentos de conexión a make_request.
-    """
-    url = f"https://api.wallapop.com/api/v3/users/{user_id}"
-    
+def get_stats_for_component(category_node, component_type, component_name):
+    """Busca las estadísticas de un componente específico si existen."""
+    if not component_name: return None
     try:
-        # Pausa antidetect (rate limit) antes de pedir
-        time.sleep(random.uniform(1, 3)) 
-        
-        response = make_request(url)
-        
-        if response.status_code == 200:
-            return response.json()
-        elif response.status_code == 404:
-            return {}
-            
-    except Exception as e:
-        print(f"    [!] Error no recuperable obteniendo detalles usuario {user_id}: {e}")
+        return category_node["components"][component_type].get(component_name)
+    except KeyError:
+        return None
+
+def smart_truncate_spam(text: str) -> str:
+    """
+    Corta el texto si detecta un bloque de etiquetas spam típico de Wallapop.
+    Ej: "GTX RTX 3060 4060 ps5 iphone..."
+    """
+    lines = text.split('\n')
+    clean_lines = []
     
-    return {}
-
-def get_user_reviews(user_id: str) -> List[Dict[str, Any]]:
-    """
-    Consulta las reviews del usuario.
-    Delega los reintentos de conexión a make_request.
-    """
-    url = f"https://api.wallapop.com/api/v3/users/{user_id}/reviews"
+    # Lista de palabras que, si aparecen muchas juntas, indican bloque de spam
+    spam_indicators = ["rtx", "gtx", "amd", "intel", "ryzen", "i7", "i5", "ps5", "xbox", "iphone", "samsung", "asus", "msi"]
     
-    try:
-        time.sleep(random.uniform(1, 3))
+    for line in lines:
+        # Si una línea tiene más de 3 indicadores de spam distintos, cortamos aquí.
+        hits = 0
+        line_lower = line.lower()
+        for ind in spam_indicators:
+            if ind in line_lower:
+                hits += 1
         
-        response = make_request(url)
-        
-        if response.status_code == 200:
-            data = response.json()
-            if isinstance(data, list):
-                return data
-            return data.get("reviews", [])
-        elif response.status_code == 404:
-            return []
-            
-    except Exception as e:
-        print(f"    [!] Error no recuperable obteniendo reviews usuario {user_id}: {e}")
-    
-    return []
-
-def is_real_laptop(item: Dict[str, Any]) -> bool:
-    """
-    Devuelve True solo si el ítem tiene el ID 10310 en su taxonomía.
-    Mantenemos esta función como doble verificación de seguridad.
-    """
-    taxonomy = item.get("taxonomy", [])
-    for category in taxonomy:
-        if str(category.get("id")) == str(TARGET_SUB_ID):
-            return True
-    return False
-
-def calculate_initial_risk(item: Dict[str, Any]) -> int:
-    """
-    Cálculo rápido de riesgo basado SOLO en el ítem (sin llamar a APIs externas).
-    """
-    score = 0
-    
-    # 1. Análisis de Precio
-    price_obj = item.get("price", {})
-    price = 0
-    if isinstance(price_obj, dict):
-        price = float(price_obj.get("amount", 0))
-    elif isinstance(price_obj, (int, float)):
-        price = float(price_obj)
-
-    if 0 < price < 50:
-        score += 30
-    
-    # 2. Keywords sospechosas
-    title = item.get("title", "").lower()
-    description = item.get("description", "").lower()
-    for kw in SUSPICIOUS_KEYWORDS:
-        if kw in title or kw in description:
-            score += 20
-            break 
-            
-    # 3. Descripción corta
-    if len(description) < 20:
-        score += 10
-
-    # 4. Flags del Ítem
-    flags = item.get("flags", {})
-    if flags.get("banned", False):
-        score += 100 
-    if flags.get("onhold", False): 
-        score += 20
-        
-    return score
-
-def enrich_and_finalize_risk(item: Dict[str, Any], initial_score: int) -> Dict[str, Any]:
-    """
-    Realiza la investigación profunda (Deep Dive) si el riesgo inicial es alto.
-    """
-    factors = []
-    final_score = initial_score
-    
-    flags = item.get("flags", {})
-    if flags.get("banned"):
-        factors.append("Item BANNED by Wallapop")
-    if flags.get("onhold"):
-        factors.append("Item ON HOLD")
-
-    # Si el riesgo inicial es bajo, no gastamos peticiones API extra
-    if initial_score < RISK_THRESHOLD_FOR_ENRICHMENT and not flags.get("banned"):
-        return {
-            "risk_score": final_score,
-            "risk_factors": ["Low risk check - No deep enrichment"],
-            "analyzed_at": datetime.now().isoformat()
-        }
-
-    # --- INVESTIGACIÓN PROFUNDA ---
-    user_id = item.get("user", {}).get("id") or item.get("user_id")
-    
-    if user_id:
-        print(f"    [Inspect] Investigando usuario {user_id} para ítem sospechoso...")
-        
-        # 1. Datos del Perfil (Usa make_request con reintentos implícitos)
-        user_profile = get_user_details(user_id)
-        
-        # Fecha de registro
-        register_date_ts = user_profile.get("register_date") 
-        if register_date_ts:
-            try:
-                reg_date = datetime.fromtimestamp(register_date_ts / 1000)
-                days_since_reg = (datetime.now() - reg_date).days
-                
-                if days_since_reg < 2:
-                    final_score += 40
-                    factors.append("User registered < 48 hours ago")
-                elif days_since_reg < 7:
-                    final_score += 20
-                    factors.append("User registered < 1 week ago")
-            except:
-                pass
-        
-        scam_reports = user_profile.get("scam_reports", 0)
-        if scam_reports > 0:
-            final_score += 50
-            factors.append(f"User has {scam_reports} scam reports")
-
-        if not user_profile.get("verification_level", 0):
-             final_score += 5
-
-        # 2. Reviews del Usuario (Usa make_request con reintentos implícitos)
-        reviews = get_user_reviews(user_id)
-        if len(reviews) == 0:
-            final_score += 15
-            factors.append("No reviews")
-        else:
-            total_stars = sum([r.get("scoring", 0) for r in reviews])
-            avg_stars = total_stars / len(reviews)
-            if avg_stars < 3:
-                final_score += 30
-                factors.append(f"Bad reputation ({avg_stars:.1f} stars)")
-
-    # Factores básicos originales
-    title = item.get("title", "").lower()
-    for kw in SUSPICIOUS_KEYWORDS:
-        if kw in title or item.get("description", "").lower().find(kw) != -1:
-            factors.append(f"Keyword found: {kw}")
+        if hits > 3:
+            # Hemos encontrado el vertedero de keywords. Paramos de leer.
             break
             
-    price_obj = item.get("price", {})
-    price = 0
-    if isinstance(price_obj, dict):
-        price = float(price_obj.get("amount", 0))
-    elif isinstance(price_obj, (int, float)):
-        price = float(price_obj)
+        clean_lines.append(line)
         
-    if 0 < price < 50:
-        factors.append("Suspiciously Low Price")
+    return "\n".join(clean_lines)
 
-    final_score = min(final_score, 100)
+def sanitize_hardware_ambiguities(text: str) -> str:
+    """
+    Corrige ambigüedades comunes donde componentes de almacenamiento
+    se confunden con procesadores (ej: 'SSD M2' vs 'Apple M2').
+    """
+    # 1. Proteger "SSD M2" / "Disco M2" -> Reemplazar por "SSD_NVME"
+    # Esto elimina el token "M2" aislado que confunde al regex de CPU
+    text = re.sub(r"(?i)\b(ssd|disco|disk|drive|almacenamiento)\s+m\.?2\b", r"\1_NVME", text)
+    
+    # 2. Proteger "M2 NVMe" / "M2 SATA" -> Reemplazar por "NVME_DRIVE"
+    text = re.sub(r"(?i)\bm\.?2\s+(ssd|nvme|sata)\b", r"NVME_\1", text)
+    
+    return text
+
+def apply_category_constraints(specs: Dict, category: str, full_text_original: str) -> Dict:
+    """
+    Aplica reglas de negocio para corregir detecciones erróneas.
+    Ej: Un Chromebook no puede tener 64GB de RAM (probablemente era el disco duro).
+    """
+    # 1. Corrección de RAM
+    limit_ram = RAM_LIMITS.get(category, 128)
+    
+    current_ram_gb = 0
+    if specs.get("ram"):
+        try:
+            current_ram_gb = int(re.sub(r"[^0-9]", "", specs["ram"]))
+        except: pass
+        
+    # Si la RAM detectada supera el límite lógico de la categoría, re-escaneamos
+    # usando el parámetro max_gb de regex_analyzer para buscar un número menor válido.
+    if current_ram_gb > limit_ram:
+        corrected_ram = regex_analyzer.extract_ram(full_text_original.lower(), max_gb=limit_ram)
+        if corrected_ram:
+            specs["ram"] = corrected_ram
+        else:
+            # Si no encontramos otra RAM válida, borramos la incorrecta para no distorsionar
+            specs["ram"] = None
+
+    # 2. Corrección de CPU en Chromebooks/Netbooks
+    # Si es Chromebook y detectamos "i7" pero también hay "Celeron" en el texto, priorizamos Celeron.
+    if category == "CHROMEBOOK" and specs.get("cpu") and "I7" in specs["cpu"]:
+        if "celeron" in full_text_original.lower():
+            specs["cpu"] = "INTEL CELERON"
+        elif "pentium" in full_text_original.lower():
+             specs["cpu"] = "INTEL PENTIUM"
+             
+    return specs
+
+def get_prioritized_specs_and_category(title: str, description: str) -> Tuple[Dict, str]:
+    """
+    Orquesta la extracción, limpieza de spam y validación de reglas.
+    """
+    # FASE 0: Sanitización de Ambigüedades (SSD M2 != Apple M2)
+    title_clean = sanitize_hardware_ambiguities(title)
+    desc_clean_spam = smart_truncate_spam(description)
+    desc_clean = sanitize_hardware_ambiguities(desc_clean_spam)
+    
+    title_lower = title_clean.lower()
+    
+    # Truncado adicional por seguridad
+    desc_truncated = desc_clean[:400] 
+    
+    # 2. Extracción (Usando texto limpio)
+    specs_title = regex_analyzer.extract_specs_regex(title_clean)
+    specs_desc = regex_analyzer.extract_specs_regex(desc_truncated)
+    
+    final_specs = {
+        "cpu": specs_title.get("cpu") if specs_title.get("cpu") else specs_desc.get("cpu"),
+        "ram": specs_title.get("ram") if specs_title.get("ram") else specs_desc.get("ram"),
+        "gpu": specs_title.get("gpu") if specs_title.get("gpu") else specs_desc.get("gpu"),
+    }
+    
+    # 3. Determinación de Categoría (Locking)
+    category = "GENERICO"
+    if "chromebook" in title_lower:
+        category = "CHROMEBOOK"
+        final_specs["gpu"] = None 
+    elif any(x in title_lower for x in ["macbook", "mac air", "mac pro", "imac"]):
+        category = "APPLE"
+    elif "surface" in title_lower and "microsoft" in title_lower:
+         category = "SURFACE"
+    else:
+        full_text_clean = f"{title_clean}. {desc_truncated}"
+        category = regex_analyzer.classify_prime_category(full_text_clean.lower(), final_specs)
+    
+    # 4. APLICACIÓN DE REGLAS DE NEGOCIO
+    full_text_for_correction = f"{title_clean} {desc_truncated}"
+    final_specs = apply_category_constraints(final_specs, category, full_text_for_correction)
+        
+    return final_specs, category
+
+# --- LÓGICA DE DETECCIÓN PROFESIONAL (PONDERADA) ---
+def calculate_advanced_risk(item: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Calcula el riesgo utilizando un ENSEMBLE PONDERADO de Z-Scores.
+    """
+    score = 0
+    factors = []
+    
+    title = item.get("title", "")
+    desc = item.get("description", "")
+    price = regex_analyzer.clean_price(item)
+    
+    # Pipeline mejorado: Extracción -> Limpieza -> Categorización -> Constraints
+    specs, category = get_prioritized_specs_and_category(title, desc)
+    
+    stats_node = MARKET_STATS.get(category, {})
+    
+    # 2. Recopilación de señales estadísticas (Ensemble)
+    signals = [] 
+    
+    # A) Señal de CPU
+    cpu_stats = get_stats_for_component(stats_node, "cpu", specs.get("cpu"))
+    if cpu_stats and cpu_stats["stdev"] > 0:
+        z_cpu = (price - cpu_stats["mean"]) / cpu_stats["stdev"]
+        signals.append({
+            "z": z_cpu, 
+            "weight": WEIGHTS["cpu"], 
+            "ref_price": cpu_stats["mean"],
+            "source": f"CPU:{specs['cpu']}"
+        })
+
+    # B) Señal de GPU
+    gpu_stats = get_stats_for_component(stats_node, "gpu", specs.get("gpu"))
+    if gpu_stats and gpu_stats["stdev"] > 0:
+        z_gpu = (price - gpu_stats["mean"]) / gpu_stats["stdev"]
+        signals.append({
+            "z": z_gpu, 
+            "weight": WEIGHTS["gpu"], 
+            "ref_price": gpu_stats["mean"],
+            "source": f"GPU:{specs['gpu']}"
+        })
+        
+    # C) Señal de RAM
+    ram_stats = get_stats_for_component(stats_node, "ram", specs.get("ram"))
+    if ram_stats and ram_stats["stdev"] > 0:
+        z_ram = (price - ram_stats["mean"]) / ram_stats["stdev"]
+        signals.append({
+            "z": z_ram, 
+            "weight": WEIGHTS["ram"], 
+            "ref_price": ram_stats["mean"],
+            "source": f"RAM:{specs['ram']}"
+        })
+
+    # D) Señal de Categoría Base 
+    if stats_node.get("stdev", 0) > 0:
+        z_cat = (price - stats_node["mean"]) / stats_node["stdev"]
+        signals.append({
+            "z": z_cat, 
+            "weight": WEIGHTS["category"], 
+            "ref_price": stats_node["mean"],
+            "source": f"CAT:{category}"
+        })
+
+    # 3. Cálculo del Z-Score Ponderado
+    final_z_score = 0
+    total_weight = 0
+    estimated_market_value = 0
+    
+    if signals:
+        weighted_z_sum = 0
+        weighted_price_sum = 0
+        
+        for s in signals:
+            weighted_z_sum += s["z"] * s["weight"]
+            weighted_price_sum += s["ref_price"] * s["weight"]
+            total_weight += s["weight"]
+            
+        if total_weight > 0:
+            final_z_score = weighted_z_sum / total_weight
+            estimated_market_value = weighted_price_sum / total_weight
+    
+    # 4. Interpretación del Riesgo Compuesto
+    
+    if final_z_score < -1.5:
+        score += 30
+        factors.append(f"Statistically Cheap (Combined Z={final_z_score:.2f})")
+        
+    if final_z_score < -2.5: # Anomalía muy fuerte
+        score += 40 
+        factors.append(f"EXTREME Price Anomaly (Target ~{int(estimated_market_value)}€)")
+
+    # Fallback: Ratio simple
+    if estimated_market_value > 0 and price > 0:
+        ratio = price / estimated_market_value
+        if ratio < 0.4:
+            score += 20
+            factors.append(f"Price is <40% of est. value ({int(ratio*100)}%)")
+
+    # 5. Heurísticas Clásicas (Keywords)
+    suspicious_keywords = ["urgente", "roto", "bloqueado", "bios", "icloud", "pieza", "tarada"]
+    found_kws = [kw for kw in suspicious_keywords if kw in (title + " " + desc).lower()]
+    
+    if found_kws:
+        score += 20
+        factors.append(f"Suspicious keywords: {found_kws}")
+    
+    # 6. Usuario Nuevo
+    user = item.get("user", {})
+    if user.get("register_date"):
+        try:
+            reg_date = datetime.fromtimestamp(user["register_date"] / 1000)
+            if (datetime.now() - reg_date).days < 2:
+                score += 30
+                factors.append("User registered < 48h ago")
+        except: pass
 
     return {
-        "risk_score": final_score,
-        "suspicious_keywords": [kw for kw in SUSPICIOUS_KEYWORDS if kw in title],
+        "risk_score": min(score, 100),
         "risk_factors": factors,
-        "user_metadata": {
-            "checked": True,
-            "register_date_ts": user_profile.get("register_date") if 'user_profile' in locals() else None
-        },
-        "analyzed_at": datetime.now().isoformat()
+        "market_analysis": {
+            "detected_category": category,
+            "specs_detected": specs,
+            "composite_z_score": round(final_z_score, 2),
+            "estimated_market_value": round(estimated_market_value, 2),
+            "components_used": [s["source"] for s in signals]
+        }
     }
 
-def fetch_items_with_pagination() -> List[Dict[str, Any]]:
+# --- BUCLE PRINCIPAL ---
+def run_smart_poller():
     url = "https://api.wallapop.com/api/v3/search"
-    
     params = {
-        "category_id": CATEGORY_ID,        # 24200
-        "subcategory_ids": TARGET_SUB_ID,  # 10310 
-        "source": "side_bar_filters",      
-        "time_filter": "today",           
-        "country_code": "ES",             
+        "category_id": CATEGORY_ID,
+        "subcategory_ids": TARGET_SUB_ID,
+        "source": "side_bar_filters",
         "order_by": "newest",
+        "time_filter": "today", 
         "latitude": "40.4168",
         "longitude": "-3.7038",
     }
-
+    
+    print("--- INICIANDO SMART POLLER (Modelo Estadístico Ponderado + Anti-Spam) ---")
+    print(f"[*] Objetivo: Recolectar hasta {MAX_ITEMS_TO_FETCH} ítems.")
+    
     all_items = []
     next_page_token = None
     page_count = 1
     
-    print(f"[*] Iniciando búsqueda v7 (Browser Params Replica) - Objetivo: {MAX_ITEMS_TO_FETCH}...")
-
     try:
         while len(all_items) < MAX_ITEMS_TO_FETCH:
-            if next_page_token:
-                params["next_page"] = next_page_token
+            if next_page_token: params["next_page"] = next_page_token
 
-            try:
-                print(f"    -> Solicitando página {page_count}...")
-                sleep_time = random.uniform(5, 12)
-                time.sleep(sleep_time)
+            print(f"    -> Solicitando página {page_count}...")
+            time.sleep(random.uniform(1, 2)) 
 
-                # make_request ahora gestiona reintentos internos (transitorios)
-                # Si falla 3 veces por red, lanzará excepción y caeremos en el except de abajo
-                response = make_request(url, params)
-
-                if response.status_code == 403:
-                    print(f"[!] Error 403: WAF activado. Esperando...")
-                    break
-                
-                if response.status_code != 200:
-                    print(f"[!] Error API ({response.status_code}): {response.text[:100]}")
-                    break
-
-                data = response.json()
-                
-                current_items = []
-                if "data" in data and "section" in data["data"]:
-                     current_items = data["data"]["section"]["payload"].get("items", [])
-                elif "search_objects" in data:
-                    current_items = data.get("search_objects", [])
-                elif "items" in data:
-                    current_items = data.get("items", [])
-
-                if not current_items:
-                    print("    [ALERTA] Página vacía o fin de resultados.")
-                    break
-
-                items_of_interest = []
-                discarded_count = 0
-                
-                for item in current_items:
-                    if is_real_laptop(item):
-                        initial_risk = calculate_initial_risk(item)
-                        enrichment_data = enrich_and_finalize_risk(item, initial_risk)
-                        
-                        item["enrichment"] = enrichment_data
-
-                        # CORRECCIÓN GEO
-                        loc = item.get("location", {})
-                        if "latitude" in loc and "longitude" in loc:
-                            loc["geo"] = {
-                                "lat": loc["latitude"],
-                                "lon": loc["longitude"]
-                            }
-                        
-                        if enrichment_data["risk_score"] >= 50:
-                            print(f"        [!] FRAUDE POTENCIAL: {item.get('title')[:30]}... (Score: {enrichment_data['risk_score']})")
-
-                        items_of_interest.append(item)
-                    else:
-                        discarded_count += 1
-                        if discarded_count == 1:
-                           print(f"        [DEBUG] Descartado: {item.get('title')[:30]}")
-
-                all_items.extend(items_of_interest)
-                print(f"    [+] Procesados {len(items_of_interest)} ítems útiles. (Descartados: {discarded_count})")
-
-                next_page_token = data.get("meta", {}).get("next_page")
-                if not next_page_token:
-                    break
-                
-                page_count += 1
-
-            except Exception as e:
-                # Este bloque captura fallos DEFINITIVOS (tras los 3 reintentos de make_request)
-                # o errores de parsing JSON. Esperamos 60s y probamos la página de nuevo.
-                print(f"[!] Excepción en paginación: {e}")
-                time.sleep(60) 
-                continue
-
-    except KeyboardInterrupt:
-        print("\n\n[!!!] Interrupción por usuario (Ctrl+C) detectada.")
-        print("[*] Deteniendo captura y procediendo a guardar los datos obtenidos...")
-
-    return all_items[:MAX_ITEMS_TO_FETCH]
-
-def save_items_to_daily_file(items: List[Dict[str, Any]]):
-    if not items:
-        return
-
-    today_str = datetime.now().strftime("%Y%m%d")
-    filename = f"wallapop_laptops_optimized_{today_str}.json"
-    
-    with open(filename, "w", encoding="utf-8") as f:
-        for item in items:
-            item["timestamps"] = {
-                "crawl_timestamp": datetime.now().isoformat()
-            }
-            f.write(json.dumps(item, ensure_ascii=False) + "\n")
+            response = make_request(url, params)
             
-    print(f"[*] ÉXITO: Guardados {len(items)} ítems en '{filename}'")
+            if not response or response.status_code != 200:
+                print(f"[!] Error API/Red. Deteniendo.")
+                break
+
+            data = response.json()
+            items = []
+            if "data" in data and "section" in data["data"]:
+                 items = data["data"]["section"]["payload"].get("items", [])
+            elif "search_objects" in data:
+                 items = data.get("search_objects", [])
+            elif "items" in data:
+                 items = data.get("items", [])
+
+            if not items:
+                print("    [INFO] Fin de resultados.")
+                break
+
+            print(f"    [+] Página {page_count}: Analizando {len(items)} ítems...")
+
+            items_added = 0
+            for item in items:
+                if regex_analyzer.clean_price(item) < 20: continue 
+                
+                item.pop("images", None)
+
+                risk_data = calculate_advanced_risk(item)
+                item["enrichment"] = risk_data
+
+                loc = item.get("location", {})
+                if "latitude" in loc and "longitude" in loc:
+                    loc["geo"] = {
+                        "lat": loc["latitude"],
+                        "lon": loc["longitude"]
+                    }
+
+                # Extraemos fechas (Wallapop devuelve milisegundos)
+                ts_created = item.get("created_at") or item.get("creation_date")
+                ts_modified = item.get("modified_at") or item.get("modification_date")
+
+                created_iso = None
+                modified_iso = None
+                is_fresh = False
+
+                # Umbral de "frescura" (24 horas)
+                threshold = datetime.now() - timedelta(hours=24)
+
+                # 1. Analizamos fecha de creación
+                if ts_created:
+                    try:
+                        dt_created = datetime.fromtimestamp(ts_created / 1000)
+                        created_iso = dt_created.isoformat()
+                        if dt_created > threshold:
+                            is_fresh = True
+                    except: pass
+
+                # 2. Analizamos fecha de modificación
+                if ts_modified:
+                    try:
+                        dt_modified = datetime.fromtimestamp(ts_modified / 1000)
+                        modified_iso = dt_modified.isoformat()
+                        if dt_modified > threshold:
+                            is_fresh = True
+                    except: pass
+
+                # 3. Guardamos en el objeto para Elastic
+                item["timestamps"] = {
+                    "crawl_timestamp": datetime.now().isoformat(),
+                    "created_at": created_iso,
+                    "modified_at": modified_iso
+                }
+
+                # 4. FILTRO FINAL: Si ni se creó ni se modificó hoy -> DESCARTAR
+                if not is_fresh:
+                    continue
+                
+                all_items.append(item)
+                items_added += 1
+                
+                if risk_data["risk_score"] >= 50:
+                    print(f"        [ALERTA] Fraude (Score: {risk_data['risk_score']})")
+                    print(f"                 Título: {item.get('title')[:60]}...")
+                    mkt = risk_data['market_analysis']
+                    price_val = item.get('price', {}).get('amount')
+                    print(f"                 Precio: {price_val}€ vs Est: {mkt['estimated_market_value']}€ (Z={mkt['composite_z_score']})")
+                    print(f"                 Motivos: {risk_data['risk_factors']}")
+            
+            print(f"    -> Agregados {items_added}. Total: {len(all_items)}")
+
+            next_page_token = data.get("meta", {}).get("next_page")
+            if not next_page_token: break
+            page_count += 1
+        
+    except KeyboardInterrupt:
+        print("\n[!] Guardando datos parciales...")
+    except Exception as e:
+        print(f"[!] Error: {e}")
+
+    if all_items:
+        filename = f"wallapop_smart_data_{datetime.now().strftime('%Y%m%d')}.json"
+        with open(filename, "w", encoding="utf-8") as f:
+            for item in all_items:
+                f.write(json.dumps(item, ensure_ascii=False) + "\n")
+        print(f"[OK] Guardado en {filename}")
 
 if __name__ == "__main__":
-    print("--- Poller Wallapop v3: Filtrado Server-Side y Detección Avanzada ---")
-    items = fetch_items_with_pagination()
-    save_items_to_daily_file(items)
-    print("--- Proceso finalizado ---")
+    run_smart_poller()
