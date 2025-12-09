@@ -183,6 +183,21 @@ def calculate_advanced_risk(item: Dict[str, Any]) -> Dict[str, Any]:
     specs, category = get_prioritized_specs_and_category(title, desc)
     stats_node = MARKET_STATS.get(category, {})
     
+    # 1. Ajuste de Precio Simbólico (Si no se ha corregido o sigue siendo bajo tras corrección)
+    # Si el precio sigue siendo < 5€ después del saneamiento, es UNCERTAIN
+    if price < 5.0:
+        return {
+            "risk_score": 0, # No damos riesgo alto, simplemente lo marcamos como incierto/basura
+            "risk_factors": ["Price is Symbolic/Placeholder"],
+            "market_analysis": {
+                "detected_category": "UNCERTAIN_PRICE",
+                "specs_detected": specs,
+                "composite_z_score": 0,
+                "estimated_market_value": 0,
+                "components_used": []
+            }
+        }
+
     signals = [] 
     
     # Análisis Estadístico (Z-Score)
@@ -327,66 +342,97 @@ def run_smart_poller():
 
             items_added = 0
             for item in items:
-                if regex_analyzer.clean_price(item) < 20: continue 
+                original_price = regex_analyzer.clean_price(item)
+                
+                # --- NUEVA LÓGICA DE SANEAMIENTO DE PRECIOS ---
+                # Si el precio es simbólico (0-5 euros), intentamos encontrar el real
+                price_was_corrected = False
+                if original_price < 5.0:
+                    real_price = regex_analyzer.try_extract_hidden_price(
+                        item.get("title", ""), 
+                        item.get("description", "")
+                    )
+                    
+                    if real_price:
+                        # ACTUALIZAMOS EL PRECIO EN MEMORIA
+                        # Wallapop usa {amount: X, currency: Y} o a veces solo un float
+                        item["price"] = {"amount": real_price, "currency": "EUR"}
+                        item["_original_price_was"] = original_price # Guardamos backup
+                        price_was_corrected = True
+                        # print(f"        [CORRECCIÓN] Precio simbólico {original_price}€ -> {real_price}€")
+                
+                # --- FIN NUEVA LÓGICA ---
+
+                # Solo ignoramos si el precio sigue siendo basura y NO pudimos corregirlo
+                # Pero ahora permitimos que calculate_advanced_risk decida si es UNCERTAIN
+                if regex_analyzer.clean_price(item) < 1.0 and not price_was_corrected: 
+                    # Realmente basura que no pudimos salvar
+                    continue 
+
                 item.pop("images", None)
 
-                # 1. Análisis preliminar (Solo con datos del anuncio)
+                # 1. Análisis preliminar (Usará el precio CORREGIDO)
                 risk_data = calculate_advanced_risk(item)
                 market_analysis = risk_data.get("market_analysis", {})
                 
-                # --- SISTEMA DE TRIGGERS (Decisión de Enriquecimiento) ---
-                should_enrich = False
-                enrichment_reason = ""
+                # Si se categorizó como uncertain price, saltamos enriquecimiento
+                if market_analysis.get("detected_category") == "UNCERTAIN_PRICE":
+                    # Lo guardamos igual para tener historial, pero sin alertas
+                    item["enrichment"] = risk_data
+                else:
+                    # --- SISTEMA DE TRIGGERS ---
+                    should_enrich = False
+                    enrichment_reason = ""
 
-                # Trigger A: Z-Score Anomaly (Precio Estadísticamente Bajo)
-                z_score = market_analysis.get("composite_z_score", 0)
-                if z_score < -1.5:
-                    should_enrich = True
-                    enrichment_reason = f"Z-Score ({z_score:.2f})"
+                    if price_was_corrected:
+                        should_enrich = True
+                        enrichment_reason = "Price Hidden/Corrected"
 
-                # Trigger B: Risky Keywords (Pago Externo/Estafa)
-                factors_str = str(risk_data["risk_factors"])
-                if "Risky Payment" in factors_str or "External Contact" in factors_str:
-                    should_enrich = True
-                    enrichment_reason = "Risky Keywords"
+                    # Trigger A: Z-Score Anomaly
+                    z_score = market_analysis.get("composite_z_score", 0)
+                    if z_score < -1.5:
+                        should_enrich = True
+                        enrichment_reason = f"Z-Score ({z_score:.2f})"
 
-                # Trigger C: Quality Gap (Gama Alta + Descripción Pobre)
-                desc_len = len(item.get("description", ""))
-                high_end = ["APPLE", "GAMING", "PREMIUM_ULTRABOOK"]
-                if market_analysis.get("detected_category") in high_end and desc_len < 50:
-                    should_enrich = True
-                    enrichment_reason = "High Value/Low Quality"
+                    # Trigger B: Risky Keywords
+                    factors_str = str(risk_data["risk_factors"])
+                    if "Risky Payment" in factors_str or "External Contact" in factors_str:
+                        should_enrich = True
+                        enrichment_reason = "Risky Keywords"
 
-                # --- EJECUCIÓN DE ENRIQUECIMIENTO ---
-                if should_enrich:
-                    user_id = item.get("user", {}).get("id") or item.get("user_id")
-                    if user_id:
-                        # print(f"        [🔍] Investigando usuario {user_id} ({enrichment_reason})...")
-                        user_details = get_user_details(user_id)
-                        
-                        # Penalizaciones por perfil
-                        reg_date_ts = user_details.get("register_date")
-                        if reg_date_ts:
-                            days_active = (datetime.now() - datetime.fromtimestamp(reg_date_ts/1000)).days
-                            if days_active < 3:
-                                risk_data["risk_score"] += 30
-                                risk_data["risk_factors"].append("New User (<3 days)")
-                        
-                        if user_details.get("scam_reports", 0) > 0:
-                            risk_data["risk_score"] += 50
-                            risk_data["risk_factors"].append("User has Scam Reports")
+                    # Trigger C: Quality Gap
+                    desc_len = len(item.get("description", ""))
+                    high_end = ["APPLE", "GAMING", "PREMIUM_ULTRABOOK"]
+                    if market_analysis.get("detected_category") in high_end and desc_len < 50:
+                        should_enrich = True
+                        enrichment_reason = "High Value/Low Quality"
+
+                    # --- EJECUCIÓN DE ENRIQUECIMIENTO ---
+                    if should_enrich:
+                        user_id = item.get("user", {}).get("id") or item.get("user_id")
+                        if user_id:
+                            user_details = get_user_details(user_id)
                             
-                        # Limitar a 100 tras sumar
-                        risk_data["risk_score"] = min(100, risk_data["risk_score"])
+                            reg_date_ts = user_details.get("register_date")
+                            if reg_date_ts:
+                                days_active = (datetime.now() - datetime.fromtimestamp(reg_date_ts/1000)).days
+                                if days_active < 3:
+                                    risk_data["risk_score"] += 30
+                                    risk_data["risk_factors"].append("New User (<3 days)")
+                            
+                            if user_details.get("scam_reports", 0) > 0:
+                                risk_data["risk_score"] += 50
+                                risk_data["risk_factors"].append("User has Scam Reports")
+                                
+                            risk_data["risk_score"] = min(100, risk_data["risk_score"])
 
-                item["enrichment"] = risk_data
+                    item["enrichment"] = risk_data
 
-                # --- CORRECCIÓN GEO ---
+                # --- CORRECCIÓN GEO Y FECHAS (Igual que antes) ---
                 loc = item.get("location", {})
                 if "latitude" in loc and "longitude" in loc:
                     loc["geo"] = {"lat": loc["latitude"], "lon": loc["longitude"]}
 
-                # --- FECHAS HÍBRIDAS (Para Historial) ---
                 ts_created = item.get("created_at") or item.get("creation_date")
                 ts_modified = item.get("modified_at") or item.get("modification_date")
                 
@@ -394,7 +440,6 @@ def run_smart_poller():
                 modified_iso = None
                 is_fresh = False
                 
-                # Umbral: 1 día
                 threshold = datetime.now() - timedelta(hours = 24)
 
                 if ts_created:

@@ -4,12 +4,12 @@ import re
 import glob
 import os
 from collections import defaultdict
-from typing import List, Dict, Set, Any, Tuple
+from typing import List, Dict, Set, Any, Tuple, Optional
 
 # --- CONFIGURACIÓN ---
 OUTPUT_STATS_FILE = "market_stats.json"
 
-# Límites lógicos de RAM para evitar falsos positivos (Sincronizado con smart_poller)
+# Límites lógicos de RAM para evitar falsos positivos
 RAM_LIMITS = {
     "CHROMEBOOK": 16,
     "SURFACE": 32,
@@ -17,10 +17,22 @@ RAM_LIMITS = {
     "GENERICO": 64
 }
 
-# --- EXPRESIONES REGULARES COMPILADAS ---
+# --- EXPRESIONES REGULARES DE PRECIOS OCULTOS ---
+# Busca: "precio 500€", "500 euros", "vendo por 500", "valor 500"
+# Prioriza números de 2 o 3 cifras para evitar confundir con GBs o modelos
+RE_HIDDEN_PRICE = re.compile(
+    r'(?i)(?:precio|valor|vende|vendo|pido|oferta)[:\s]*(?:por)?\s*(\d{2,4})(?:[\.,]\d{2})?\s*(?:€|eur|euros)', 
+    re.IGNORECASE
+)
+# Busca precios sueltos con símbolo de moneda fuertes: "500€" o "500 €" (evita "500")
+RE_LOOSE_PRICE = re.compile(
+    r'\b(\d{2,4})\s*(?:€|euros)\b', 
+    re.IGNORECASE
+)
+
+# --- EXPRESIONES REGULARES COMPILADAS (HARDWARE) ---
 
 # 1. RAM: Captura "8GB", "8 gb", "16 gigas"
-# Lookahead negativo para evitar confundir con almacenamiento si está explícito
 RE_RAM = re.compile(
     r'\b(\d+)\s*(?:gb|gigas?)\b(?!\s*(?:[\.,\-\/]\s*)?(?:de\s+)?(?:ssd|hdd|emmc|rom|almacenamiento|storage|disco|nvme|flash|interno|interna))', 
     re.IGNORECASE
@@ -32,7 +44,6 @@ RE_CPU_MODELS = [
     re.compile(r'\b(core\s*-?)?(i[3579])\b', re.IGNORECASE),      
     re.compile(r'\b(ryzen)\s*-?([3579])\b', re.IGNORECASE),       
     re.compile(r'\b(m[123])\s*(pro|max|ultra)?\b', re.IGNORECASE),
-    # Nuevos modelos de gama baja / específicos
     re.compile(r'\b(celeron|pentium|atom|xeon)\b', re.IGNORECASE),
     re.compile(r'\b(snapdragon|sq[123])\b', re.IGNORECASE)
 ]
@@ -83,16 +94,47 @@ def clean_price(item):
         return float(p)
     except: return 0.0
 
+def try_extract_hidden_price(title: str, description: str) -> Optional[float]:
+    """
+    Intenta encontrar un precio real en el texto cuando el precio listado es sospechoso (0-5€).
+    Devuelve el precio encontrado o None.
+    """
+    full_text = f"{title} \n {description}"
+    
+    # 1. Intentar búsqueda con contexto explícito ("precio 500€")
+    matches = RE_HIDDEN_PRICE.findall(full_text)
+    for m in matches:
+        try:
+            val = float(m)
+            if val > 20: # Filtrar precios de envíos o tonterías
+                return val
+        except: pass
+        
+    # 2. Intentar búsqueda de precios sueltos ("500€")
+    matches_loose = RE_LOOSE_PRICE.findall(full_text)
+    # Preferimos el valor más alto encontrado que parezca un precio de portátil
+    candidates = []
+    for m in matches_loose:
+        try:
+            val = float(m)
+            if 50 <= val <= 5000: # Rango razonable
+                candidates.append(val)
+        except: pass
+    
+    if candidates:
+        return max(candidates) # Devolvemos el más alto (asumiendo que otros pueden ser cuotas o descuentos)
+        
+    return None
+
 def is_match(text_lower, keywords):
     for kw in keywords:
         if re.search(r'\b' + re.escape(kw) + r'\b', text_lower):
             return True
     return False
 
-# --- NUEVAS FUNCIONES DE SANITIZACIÓN (Sincronizadas con smart_poller) ---
+# --- NUEVAS FUNCIONES DE SANITIZACIÓN ---
 
 def smart_truncate_spam(text: str) -> str:
-    """Corta el texto si detecta un bloque de etiquetas spam."""
     lines = text.split('\n')
     clean_lines = []
     spam_indicators = ["rtx", "gtx", "amd", "intel", "ryzen", "i7", "i5", "ps5", "xbox", "iphone", "samsung", "asus", "msi"]
@@ -103,19 +145,17 @@ def smart_truncate_spam(text: str) -> str:
         for ind in spam_indicators:
             if ind in line_lower: hits += 1
         
-        if hits > 3: break # Bloque de spam detectado
+        if hits > 3: break 
         clean_lines.append(line)
         
     return "\n".join(clean_lines)
 
 def sanitize_hardware_ambiguities(text: str) -> str:
-    """Corrige 'SSD M2' vs 'Apple M2'."""
     text = re.sub(r"(?i)\b(ssd|disco|disk|drive|almacenamiento)\s+m\.?2\b", r"\1_NVME", text)
     text = re.sub(r"(?i)\bm\.?2\s+(ssd|nvme|sata)\b", r"NVME_\1", text)
     return text
 
 def apply_category_constraints(specs: Dict, category: str, full_text_original: str) -> Dict:
-    """Aplica reglas de negocio (RAM max, CPU coherente)."""
     limit_ram = RAM_LIMITS.get(category, 128)
     
     current_ram_gb = 0
@@ -142,7 +182,7 @@ def apply_category_constraints(specs: Dict, category: str, full_text_original: s
 def determine_market_segment(title, description, price, specs=None):
     title_lower = title.lower()
     
-    if price < 20: return "JUNK"
+    if price < 5: return "UNCERTAIN" # Cambio: De JUNK a UNCERTAIN si no se corrigió
     if price > 10000: return "JUNK"
     
     if is_match(title_lower, BROKEN_KEYWORDS):
@@ -153,13 +193,9 @@ def determine_market_segment(title, description, price, specs=None):
     
     if is_accessory_keyword:
         if price < 100: return "ACCESSORY"
-        
         has_specs = specs and (specs.get("cpu") or specs.get("ram"))
-        if price > 200 and has_specs:
-            return "PRIME"
-
-        if any(title_lower.startswith(x) for x in ["funda", "carcasa", "caja", "dock", "base"]):
-            return "ACCESSORY"
+        if price > 200 and has_specs: return "PRIME"
+        if any(title_lower.startswith(x) for x in ["funda", "carcasa", "caja", "dock", "base"]): return "ACCESSORY"
         if is_laptop: return "PRIME"
         return "ACCESSORY"
 
@@ -229,7 +265,6 @@ def extract_ram(text_lower, max_gb=128):
 
 def extract_specs_regex(text):
     text_lower = text.lower()
-    
     specs = {
         "ram": None, 
         "cpu_brand": None, 
@@ -241,7 +276,6 @@ def extract_specs_regex(text):
 
     specs["ram"] = extract_ram(text_lower)
 
-    # Extracción CPU
     brand_matches = RE_CPU_BRAND.findall(text_lower)
     if brand_matches:
         specs["cpu_brand"] = brand_matches[0].upper() 
@@ -259,7 +293,6 @@ def extract_specs_regex(text):
             else:
                 full_model = m.replace(" ", "")
             
-            # Normalización
             if "ryzen" in full_model.lower():
                 num = re.sub(r"[^0-9]", "", full_model)
                 specs["cpu_models"].add(f"RYZEN{num}")
@@ -271,7 +304,6 @@ def extract_specs_regex(text):
             elif any(x in full_model.lower() for x in ["celeron", "pentium", "atom", "xeon", "snapdragon", "sq1", "sq2", "sq3"]):
                  specs["cpu_models"].add(full_model.upper())
 
-    # Extracción GPU
     gpu_brand_matches = RE_GPU_BRAND.findall(text_lower)
     if gpu_brand_matches:
         specs["gpu_brand"] = gpu_brand_matches[0].upper()
@@ -319,16 +351,13 @@ def classify_prime_category(text_lower, specs):
     if "gaming" in text_lower: return "GAMING"
     return "GENERICO"
 
-# --- LÓGICA UNIFICADA DE EXTRACCIÓN (Igual que smart_poller) ---
 def get_prioritized_specs_and_category(title: str, description: str) -> Tuple[Dict, str]:
-    # 1. Sanitización
     title_clean = sanitize_hardware_ambiguities(title)
     desc_clean_spam = smart_truncate_spam(description)
     desc_clean = sanitize_hardware_ambiguities(desc_clean_spam)
     title_lower = title_clean.lower()
     desc_truncated = desc_clean[:400] 
     
-    # 2. Extracción
     specs_title = extract_specs_regex(title_clean)
     specs_desc = extract_specs_regex(desc_truncated)
     
@@ -338,7 +367,6 @@ def get_prioritized_specs_and_category(title: str, description: str) -> Tuple[Di
         "gpu": specs_title.get("gpu") if specs_title.get("gpu") else specs_desc.get("gpu"),
     }
     
-    # 3. Categoría (Locking)
     category = "GENERICO"
     if "chromebook" in title_lower:
         category = "CHROMEBOOK"
@@ -351,7 +379,6 @@ def get_prioritized_specs_and_category(title: str, description: str) -> Tuple[Di
         full_text_clean = f"{title_clean}. {desc_truncated}"
         category = classify_prime_category(full_text_clean.lower(), final_specs)
     
-    # 4. Constraints
     full_text_for_correction = f"{title_clean} {desc_truncated}"
     final_specs = apply_category_constraints(final_specs, category, full_text_for_correction)
         
@@ -376,10 +403,8 @@ def process_data(input_file):
         title = item.get('title', '') or ""
         desc = item.get('description', '') or ""
         
-        # --- NUEVO FLUJO PRIORITARIO ---
         specs, cat = get_prioritized_specs_and_category(title, desc)
         
-        # Segmentación básica (JUNK/BROKEN/ACCESSORY) sigue siendo necesaria
         segment = determine_market_segment(title, desc, price, specs)
         
         if segment == "JUNK": continue
@@ -388,7 +413,7 @@ def process_data(input_file):
             market_data["SECONDARY"][segment].append(price)
             continue
             
-        if not specs["cpu"] and not specs["ram"]:
+        if segment == "UNCERTAIN" or (not specs["cpu"] and not specs["ram"]):
             market_data["UNCERTAIN"]["prices"].append(price)
             continue
             
