@@ -16,7 +16,7 @@ except ImportError:
 # --- CONFIGURACIÓN ---
 CATEGORY_ID = "24200"
 TARGET_SUB_ID = "10310"
-MAX_ITEMS_TO_FETCH = 30000 
+MAX_ITEMS_TO_FETCH = 1000 
 STATS_FILE = "market_stats.json"
 
 WEIGHTS = { "cpu": 0.5, "gpu": 0.3, "ram": 0.1, "category": 0.1 }
@@ -225,13 +225,13 @@ def run_smart_poller():
         "subcategory_ids": TARGET_SUB_ID,
         "source": "side_bar_filters", 
         "order_by": "newest", 
-        #"time_filter": "today",
+        "time_filter": "today",
         "latitude": "40.4168", 
         "longitude": "-3.7038",
     }
     
     # 1. Definimos la ventana de tiempo estricta (últimas 24h)
-    cutoff_date = datetime.now() - timedelta(weeks=20)
+    cutoff_date = datetime.now() - timedelta(hours=24)
     print("--- SMART POLLER v3 (Always Full Details & Condition-Aware Pricing) ---")
     print(f"[*] Fecha de corte (24h): {cutoff_date.isoformat()}")
     
