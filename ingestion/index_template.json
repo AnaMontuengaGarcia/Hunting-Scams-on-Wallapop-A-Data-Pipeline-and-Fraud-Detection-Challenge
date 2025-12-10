@@ -38,6 +38,11 @@ PUT _index_template/lab10310-wallapop-template
         "category_id": { "type": "keyword" },
         "user_id": { "type": "keyword" },
         "web_slug": { "type": "keyword" },
+        
+        "created_at": { "type": "date" },
+        "modified_at": { "type": "date" },
+        "modified_date": { "type": "date" }, 
+        
         "location": {
           "properties": {
             "geo": { "type": "geo_point" }, 
@@ -50,9 +55,7 @@ PUT _index_template/lab10310-wallapop-template
         },
         "timestamps": {
           "properties": {
-            "crawl_timestamp": { "type": "date" },
-            "created_at": { "type": "date" }, 
-            "modified_at": { "type": "date" }
+            "crawl_timestamp": { "type": "date" }
           }
         },
         "enrichment": {
@@ -75,14 +78,6 @@ PUT _index_template/lab10310-wallapop-template
               }
             }
           }
-        },
-        "taxonomy": {
-          "type": "object",
-          "enabled": false 
-        },
-        "images": {
-          "type": "object",
-          "enabled": false
         }
       }
     }

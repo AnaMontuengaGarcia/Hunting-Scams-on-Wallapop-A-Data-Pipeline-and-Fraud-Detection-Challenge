@@ -16,7 +16,7 @@ except ImportError:
 # --- CONFIGURACIÓN ---
 CATEGORY_ID = "24200"
 TARGET_SUB_ID = "10310"
-MAX_ITEMS_TO_FETCH = 20000 
+MAX_ITEMS_TO_FETCH = 30000 
 STATS_FILE = "market_stats.json"
 
 WEIGHTS = { "cpu": 0.5, "gpu": 0.3, "ram": 0.1, "category": 0.1 }
@@ -52,13 +52,13 @@ def make_request(url: str, params: dict = None) -> requests.Response:
 
 def get_user_details(user_id: str) -> Dict[str, Any]:
     url = f"https://api.wallapop.com/api/v3/users/{user_id}"
-    time.sleep(random.uniform(0, 0.01))
+    time.sleep(random.uniform(0, 0.001))
     response = make_request(url)
     return response.json() if response and response.status_code == 200 else {}
 
 def get_user_reviews_stats(user_id: str) -> Dict[str, float]:
     url = f"https://api.wallapop.com/api/v3/users/{user_id}/reviews"
-    time.sleep(random.uniform(0, 0.01))
+    time.sleep(random.uniform(0, 0.001))
     response = make_request(url)
     stats = {"count": 0, "avg_stars": 0.0}
     if response and response.status_code == 200:
@@ -80,7 +80,7 @@ def get_item_details_full(item_id: str) -> Dict[str, Any]:
     url = f"https://api.wallapop.com/api/v3/items/{item_id}"
     
     # PAUSA ALEATORIA SEGURA (0.1 - 0.5s)
-    time.sleep(random.uniform(0, 0.01))
+    time.sleep(random.uniform(0, 0.001))
     
     response = make_request(url)
     return response.json() if response and response.status_code == 200 else {}
@@ -225,13 +225,13 @@ def run_smart_poller():
         "subcategory_ids": TARGET_SUB_ID,
         "source": "side_bar_filters", 
         "order_by": "newest", 
-        "time_filter": "today",
+        #"time_filter": "today",
         "latitude": "40.4168", 
         "longitude": "-3.7038",
     }
     
     # 1. Definimos la ventana de tiempo estricta (últimas 24h)
-    cutoff_date = datetime.now() - timedelta(hours=24)
+    cutoff_date = datetime.now() - timedelta(weeks=20)
     print("--- SMART POLLER v3 (Always Full Details & Condition-Aware Pricing) ---")
     print(f"[*] Fecha de corte (24h): {cutoff_date.isoformat()}")
     
@@ -355,6 +355,11 @@ def run_smart_poller():
             risk_data["risk_score"] = max(0, min(100, risk_data["risk_score"]))
             item["enrichment"] = risk_data
             
+            # Este bloque crea el campo "location.geo" necesario para los mapas de Elastic
+            loc = item.get("location", {})
+            if "latitude" in loc and "longitude" in loc:
+                loc["geo"] = {"lat": loc["latitude"], "lon": loc["longitude"]}
+
             # --- Timestamping ---
             item["timestamps"] = {"crawl_timestamp": datetime.now().isoformat()}
             
