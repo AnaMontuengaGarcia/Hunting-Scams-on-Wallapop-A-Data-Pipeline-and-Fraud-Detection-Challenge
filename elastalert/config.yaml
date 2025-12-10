@@ -1,3 +1,5 @@
+rules_folder: elastalert/rules
+
 # Conexión a Elasticsearch
 es_host: localhost
 es_port: 9200

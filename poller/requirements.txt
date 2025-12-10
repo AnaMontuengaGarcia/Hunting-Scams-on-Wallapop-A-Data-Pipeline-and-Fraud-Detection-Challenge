@@ -1,5 +1,5 @@
 requests>=2.31.0
-elasticsearch>=8.0.0
+elasticsearch>=7.9.10
 # Solo si ejecutas ElastAlert2 localmente como paquete de Python
 elastalert2>=2.16.0
 curl-cffi>=0.13.0

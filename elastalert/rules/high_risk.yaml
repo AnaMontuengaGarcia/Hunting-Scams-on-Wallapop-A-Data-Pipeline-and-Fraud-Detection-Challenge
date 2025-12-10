@@ -5,18 +5,38 @@ timeframe:
   minutes: 10
 
 index: "lab10310.wallapop"
+timestamp_field: "timestamps.crawl_timestamp"
 
-# Filtro: Risk Score calculado por tu script >= 50
+# Filtro: Risk Score >= 80
 filter:
 - range:
     enrichment.risk_score:
-      gte: 50
+      gte: 80
 
+# --- CONFIGURACIÓN DE EMAIL ---
 alert:
-- "debug"
+- "email"
 
-alert_text: "ALERTA DE FRAUDE: Ítem con Risk Score {0}/100.\nMotivos: {1}\nTítulo: {2}"
-alert_text_args:
+# A quién se envía el correo
+email:
+- "840946gestiondered@gmail.com"
+
+# Configuración del Servidor SMTP (Ejemplo para GMAIL)
+smtp_host: "smtp.gmail.com"
+smtp_port: 587
+smtp_auth_file: "/root/wallapop-project/elastalert/smtp_auth.yaml"
+email_reply_to: "840946gestiondered@gmail.com"
+from_addr: "840946gestiondered@gmail.com"
+smtp_ssl: false
+smtp_starttls: true
+
+# Asunto y Cuerpo del mensaje
+alert_subject: "ALERTA DE FRAUDE: Ítem con Risk Score {0}"
+alert_subject_args:
 - "enrichment.risk_score"
+
+alert_text: "Se ha detectado un ítem sospechoso.\n\nMotivos: {0}\nTítulo: {1}\nEnlace: http://wallapop.com/item/{2}"
+alert_text_args:
 - "enrichment.risk_factors"
 - "title"
+- "web_slug"
