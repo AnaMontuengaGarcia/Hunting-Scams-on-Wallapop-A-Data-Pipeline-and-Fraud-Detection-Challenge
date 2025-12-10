@@ -17,6 +17,7 @@ except ImportError:
 CATEGORY_ID = "24200"
 TARGET_SUB_ID = "10310"
 MAX_ITEMS_TO_FETCH = 1000 
+SAVE_INTERVAL_MINUTES = 20
 STATS_FILE = "market_stats.json"
 
 WEIGHTS = { "cpu": 0.5, "gpu": 0.3, "ram": 0.1, "category": 0.1 }
@@ -237,140 +238,155 @@ def run_smart_poller():
     
     all_items = []
     next_page_token = None
+    last_save = datetime.now()
     
-    while len(all_items) < MAX_ITEMS_TO_FETCH:
-        if next_page_token: params["next_page"] = next_page_token
-        
-        response = make_request(url, params)
-        if not response: break
-        
-        data = response.json()
-        items = []
-        if "data" in data and "section" in data["data"]: 
-            items = data["data"]["section"]["payload"].get("items", [])
-        elif "items" in data: items = data.get("items", [])
-        
-        if not items: break
-        
-        print(f"    [+] Analizando lote de {len(items)} items...")
-        
-        for item in items:
-            # --- FILTRO DE FECHA (Nuevo) ---
-            # Wallapop da timestamp en milisegundos.
-            ts = item.get("modified_date") or item.get("creation_date")
-            if ts:
-                try:
-                    item_dt = datetime.fromtimestamp(ts / 1000)
-                    if item_dt < cutoff_date:
-                        # Si es más viejo de 24h, lo ignoramos y pasamos al siguiente
-                        continue
-                except: pass # Si falla el parseo, lo dejamos pasar por si acaso
+    try:
 
-            # 0. Saneamiento inicial
-            original_price = regex_analyzer.clean_price(item)
-            corrected_price = False
-            if original_price < 5.0:
-                real = regex_analyzer.try_extract_hidden_price(item.get("title",""), item.get("description",""))
-                if real: 
-                    item["price"] = {"amount": real, "currency": "EUR"}
-                    corrected_price = True
+        while len(all_items) < MAX_ITEMS_TO_FETCH:
+            if next_page_token: params["next_page"] = next_page_token
             
-            if regex_analyzer.clean_price(item) < 1.0 and not corrected_price: continue
+            response = make_request(url, params)
+            if not response: break
+            
+            data = response.json()
+            items = []
+            if "data" in data and "section" in data["data"]: 
+                items = data["data"]["section"]["payload"].get("items", [])
+            elif "items" in data: items = data.get("items", [])
+            
+            if not items: break
+            
+            print(f"    [+] Analizando lote de {len(items)} items...")
+            
+            for item in items:
+                # --- FILTRO DE FECHA (Nuevo) ---
+                # Wallapop da timestamp en milisegundos.
+                ts = item.get("modified_date") or item.get("creation_date")
+                if ts:
+                    try:
+                        item_dt = datetime.fromtimestamp(ts / 1000)
+                        if item_dt < cutoff_date:
+                            # Si es más viejo de 24h, lo ignoramos y pasamos al siguiente
+                            continue
+                    except: pass # Si falla el parseo, lo dejamos pasar por si acaso
 
-            # --- NUEVO: OBTENCIÓN INCONDICIONAL DE DETALLES ---
-            item_id = item.get("id")
-            real_condition = None
-            
-            if item_id:
-                # Obtenemos SIEMPRE los detalles para ver el estado real
-                details = get_item_details_full(item_id)
+                # 0. Saneamiento inicial
+                original_price = regex_analyzer.clean_price(item)
+                corrected_price = False
+                if original_price < 5.0:
+                    real = regex_analyzer.try_extract_hidden_price(item.get("title",""), item.get("description",""))
+                    if real: 
+                        item["price"] = {"amount": real, "currency": "EUR"}
+                        corrected_price = True
                 
-                # Extraer condition de type_attributes
-                api_cond_val = None
-                type_attrs = details.get("type_attributes", {})
-                if type_attrs and "condition" in type_attrs:
-                    api_cond_val = type_attrs["condition"].get("value")
+                if regex_analyzer.clean_price(item) < 1.0 and not corrected_price: continue
+
+                # --- NUEVO: OBTENCIÓN INCONDICIONAL DE DETALLES ---
+                item_id = item.get("id")
+                real_condition = None
                 
-                real_condition = map_api_condition(api_cond_val)
+                if item_id:
+                    # Obtenemos SIEMPRE los detalles para ver el estado real
+                    details = get_item_details_full(item_id)
+                    
+                    # Extraer condition de type_attributes
+                    api_cond_val = None
+                    type_attrs = details.get("type_attributes", {})
+                    if type_attrs and "condition" in type_attrs:
+                        api_cond_val = type_attrs["condition"].get("value")
+                    
+                    real_condition = map_api_condition(api_cond_val)
+                    
+                    # También comprobamos si es refurbished
+                    if details.get("is_refurbished", {}).get("flag") is True:
+                        real_condition = "LIKE_NEW"
+
+                    # Guardamos datos extra en el item enriquecido (útil para Kibana/Investigación)
+                    item["counters"] = details.get("counters") # views, favorites
+                    item["shipping_allowed"] = details.get("shipping", {}).get("user_allows_shipping")
+
+                # 1. CÁLCULO RIESGO (Usando la condición real forzada y la tabla de precios correcta)
+                risk_data = calculate_risk_base(item, force_condition=real_condition)
                 
-                # También comprobamos si es refurbished
-                if details.get("is_refurbished", {}).get("flag") is True:
-                     real_condition = "LIKE_NEW"
+                if real_condition:
+                    risk_data["risk_factors"].append(f"Verified Condition: {real_condition}")
 
-                # Guardamos datos extra en el item enriquecido (útil para Kibana/Investigación)
-                item["counters"] = details.get("counters") # views, favorites
-                item["shipping_allowed"] = details.get("shipping", {}).get("user_allows_shipping")
+                # 2. DECISIÓN DE ENRIQUECIMIENTO EXTRA (Usuarios/Reviews)
+                # Aunque ya tenemos detalles del item, seguimos enriqueciendo datos de usuario 
+                # solo si hay algún riesgo o interés, para no multiplicar peticiones x3.
+                should_enrich_user = False
+                
+                if risk_data["market_analysis"].get("composite_z_score", 0) < -1.5: should_enrich_user = True
+                if "External Contact" in str(risk_data["risk_factors"]): should_enrich_user = True
+                if corrected_price: should_enrich_user = True
 
-            # 1. CÁLCULO RIESGO (Usando la condición real forzada y la tabla de precios correcta)
-            risk_data = calculate_risk_base(item, force_condition=real_condition)
-            
-            if real_condition:
-                 risk_data["risk_factors"].append(f"Verified Condition: {real_condition}")
+                # 3. ENRIQUECIMIENTO USUARIO
+                if should_enrich_user:
+                    user_id = item.get("user", {}).get("id") or item.get("user_id")
 
-            # 2. DECISIÓN DE ENRIQUECIMIENTO EXTRA (Usuarios/Reviews)
-            # Aunque ya tenemos detalles del item, seguimos enriqueciendo datos de usuario 
-            # solo si hay algún riesgo o interés, para no multiplicar peticiones x3.
-            should_enrich_user = False
-            
-            if risk_data["market_analysis"].get("composite_z_score", 0) < -1.5: should_enrich_user = True
-            if "External Contact" in str(risk_data["risk_factors"]): should_enrich_user = True
-            if corrected_price: should_enrich_user = True
+                    if user_id:
+                        u_details = get_user_details(user_id)
+                        u_stats = get_user_reviews_stats(user_id)
+                        
+                        # Lógica Reputación
+                        sales = u_stats["count"]
+                        stars = u_stats["avg_stars"]
+                        badges = u_details.get("badges", [])
+                        is_top = "TOP" in str(badges).upper() or u_details.get("type") == "pro"
+                        
+                        if sales > 5 and stars >= 4.5:
+                            risk_data["risk_score"] -= 30
+                            risk_data["risk_factors"].append(f"Trusted Seller ({sales}+ reviews)")
+                        if is_top:
+                            risk_data["risk_score"] -= 50
+                            risk_data["risk_factors"].append("TOP SELLER")
 
-            # 3. ENRIQUECIMIENTO USUARIO
-            if should_enrich_user:
-                user_id = item.get("user", {}).get("id") or item.get("user_id")
+                        reg_ts = u_details.get("register_date")
+                        if reg_ts:
+                            days = (datetime.now() - datetime.fromtimestamp(reg_ts/1000)).days
+                            if days < 3: 
+                                risk_data["risk_score"] += 30
+                                risk_data["risk_factors"].append("New User")
+                            if days > 365 and sales == 0:
+                                risk_data["risk_score"] += 20
+                                risk_data["risk_factors"].append("Dormant Account")
+                        
+                        if u_details.get("scam_reports", 0) > 0:
+                            risk_data["risk_score"] = 100
+                            risk_data["risk_factors"].append("REPORTED SCAMMER")
 
-                if user_id:
-                    u_details = get_user_details(user_id)
-                    u_stats = get_user_reviews_stats(user_id)
-                    
-                    # Lógica Reputación
-                    sales = u_stats["count"]
-                    stars = u_stats["avg_stars"]
-                    badges = u_details.get("badges", [])
-                    is_top = "TOP" in str(badges).upper() or u_details.get("type") == "pro"
-                    
-                    if sales > 5 and stars >= 4.5:
-                        risk_data["risk_score"] -= 30
-                        risk_data["risk_factors"].append(f"Trusted Seller ({sales}+ reviews)")
-                    if is_top:
-                        risk_data["risk_score"] -= 50
-                        risk_data["risk_factors"].append("TOP SELLER")
+                # Clamp final
+                risk_data["risk_score"] = max(0, min(100, risk_data["risk_score"]))
+                item["enrichment"] = risk_data
+                
+                # Este bloque crea el campo "location.geo" necesario para los mapas de Elastic
+                loc = item.get("location", {})
+                if "latitude" in loc and "longitude" in loc:
+                    loc["geo"] = {"lat": loc["latitude"], "lon": loc["longitude"]}
 
-                    reg_ts = u_details.get("register_date")
-                    if reg_ts:
-                        days = (datetime.now() - datetime.fromtimestamp(reg_ts/1000)).days
-                        if days < 3: 
-                            risk_data["risk_score"] += 30
-                            risk_data["risk_factors"].append("New User")
-                        if days > 365 and sales == 0:
-                            risk_data["risk_score"] += 20
-                            risk_data["risk_factors"].append("Dormant Account")
-                    
-                    if u_details.get("scam_reports", 0) > 0:
-                        risk_data["risk_score"] = 100
-                        risk_data["risk_factors"].append("REPORTED SCAMMER")
+                # --- Timestamping ---
+                item["timestamps"] = {"crawl_timestamp": datetime.now().isoformat()}
+                
+                all_items.append(item)
+                
+                if risk_data["risk_score"] >= 50:
+                    print(f"        [!] ALERTA (Score {risk_data['risk_score']}): {item.get('title')[:40]}...")
 
-            # Clamp final
-            risk_data["risk_score"] = max(0, min(100, risk_data["risk_score"]))
-            item["enrichment"] = risk_data
-            
-            # Este bloque crea el campo "location.geo" necesario para los mapas de Elastic
-            loc = item.get("location", {})
-            if "latitude" in loc and "longitude" in loc:
-                loc["geo"] = {"lat": loc["latitude"], "lon": loc["longitude"]}
+            # --- AUTOGUARDADO CADA 20 MINUTOS ---
+            if (datetime.now() - last_save).total_seconds() > (SAVE_INTERVAL_MINUTES * 60):
+                fname = f"wallapop_smart_data_{datetime.now().strftime('%Y%m%d')}.json"
+                print(f"\n    [DISK] Autoguardando progreso ({len(all_items)} items) en {fname}...")
+                with open(fname, "w", encoding="utf-8") as f:
+                    for i in all_items: f.write(json.dumps(i, ensure_ascii=False)+"\n")
+                last_save = datetime.now()
+            # ------------------------------------
 
-            # --- Timestamping ---
-            item["timestamps"] = {"crawl_timestamp": datetime.now().isoformat()}
-            
-            all_items.append(item)
-            
-            if risk_data["risk_score"] >= 50:
-                print(f"        [!] ALERTA (Score {risk_data['risk_score']}): {item.get('title')[:40]}...")
-
-        next_page_token = data.get("meta", {}).get("next_page")
-        if not next_page_token: break
+            next_page_token = data.get("meta", {}).get("next_page")
+            if not next_page_token: break
     
+    except KeyboardInterrupt:  # <--- AÑADIR ESTO ALINEADO CON EL TRY
+        print("\n\n[!] Detenido por el usuario (Ctrl+C). Guardando datos recolectados...")
+
     # Save
     if all_items:
         fname = f"wallapop_smart_data_{datetime.now().strftime('%Y%m%d')}.json"
