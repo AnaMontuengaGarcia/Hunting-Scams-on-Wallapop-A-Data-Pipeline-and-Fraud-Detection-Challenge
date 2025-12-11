@@ -431,7 +431,7 @@ Este proyecto se distribuye bajo la licencia MIT. Consulta el archivo `LICENSE` 
 ## Autores
 
 - **Ana Montuenga García** - [GitHub](https://github.com/AnaMontuengaGarcia)
-- **Daniel Modrego Solsona** - [GitHub](https:github.com/D-MSol4)
+- **Daniel Modrego Solsona** - [GitHub](https://github.com/D-MSol4)
 
 ---
 
