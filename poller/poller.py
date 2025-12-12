@@ -465,17 +465,11 @@ def calculate_risk_base(item, force_condition=None):
     if final_z < -2.5:
         score += 40
         factors.append("EXTREME Price Anomaly")
-    
-    # Precio muy por debajo del valor estimado
-    if est_val > 0 and (price / est_val) < 0.4:
-        score += 20
-        factors.append("Critical Price Drop (<40%)")
 
     # -------------------------------------------------------------------------
     # HEURÍSTICAS ADICIONALES DE DETECCIÓN
     # -------------------------------------------------------------------------
     
-    # Descripción muy corta para un producto caro = sospechoso
     # Descripción muy corta para un producto caro = sospechoso
     if len(desc) < 30 and price > 200:
         score += 15
